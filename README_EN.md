@@ -40,7 +40,7 @@ Community builds without Developer ID signing and notarization may display addit
 ### Build from source
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/yizhigou/codex-usage-bar.git
 cd CodexUsageBar
 ./build-app.sh dist
 open "dist/Codex Usage Bar.app"
