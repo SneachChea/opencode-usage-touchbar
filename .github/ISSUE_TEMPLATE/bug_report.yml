@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible Codex Usage Bar problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove account details, local usernames, and tokens from logs or screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: 2.0.0 (build 21)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and Mac model
+      placeholder: macOS 15.6, MacBook Pro 2019 with Touch Bar
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: touchbar
+    attributes:
+      label: Touch Bar involved?
+      options: ["No", "Yes — public app Touch Bar", "Yes — automatic Codex presentation"]
+    validations:
+      required: true
