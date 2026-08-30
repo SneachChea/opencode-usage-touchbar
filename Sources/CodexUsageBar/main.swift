@@ -262,7 +262,7 @@ final class UsageStore: ObservableObject {
         didSet { UserDefaults.standard.set(touchBarWhenCodexActive, forKey: "touchBarWhenCodexActive") }
     }
 
-    private var refreshTimer: Timer?
+    private var refreshTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -272,9 +272,17 @@ final class UsageStore: ObservableObject {
         touchBarEnabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
         touchBarWhenCodexActive = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
         refresh()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        refreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.refresh()
+            }
         }
+    }
+
+    deinit {
+        refreshTask?.cancel()
     }
 
     var menuTitle: String {
