@@ -20,13 +20,34 @@
 - 支持登录时自动启动，每 5 分钟自动刷新。
 - 在带 Touch Bar 的 MacBook Pro 上显示两组进度、百分比和重置时间。
 - Codex 位于前台时可自动显示 Touch Bar 用量界面。
-- 不依赖第三方库，不需要单独填写 API Key。
+- 可选显示 OpenCode Go 用量（5 小时滚动、每周、每月）于菜单栏、菜单和 Touch Bar。
+- 不依赖第三方库。
 
 ## 系统要求
 
 - macOS 14.0 或更高版本。
 - 已安装并登录 Codex 桌面客户端；应用也会尝试查找常见路径下的 `codex` 可执行文件。
+- OpenCode Go 显示为可选功能，需要你的 OpenCode Go API 密钥（见下）。
 - Touch Bar 功能需要配备 Touch Bar 的 Mac。其他 Mac 可正常使用菜单栏功能。
+
+## OpenCode Go 用量
+
+当存在可用的 API 密钥时，应用会显示 OpenCode Go 用量。请在应用设置的
+“OpenCode Go”分区中输入你的 OpenCode Go API 密钥——密钥会安全地存入
+macOS 钥匙串（Keychain），应用使用它调用只读的 OpenCode Go 用量接口
+（`https://opencode.ai/zen/go/v1/usage`），并在菜单栏、菜单和 Touch Bar 中
+显示 5 小时滚动、每周和每月的剩余用量。在设置中点击“移除密钥”可删除
+已保存的密钥。
+
+作为替代方案，也可以通过 `OPENCODE_GO_API_KEY` 环境变量提供密钥（例如
+从终端启动时）：
+
+```bash
+OPENCODE_GO_API_KEY="opencode-..." open "dist/Codex Usage Bar.app"
+```
+
+钥匙串中保存的密钥优先于环境变量。未配置任何密钥时，菜单中会显示提示，
+并只显示 Codex 用量。
 
 ## 安装
 
@@ -86,7 +107,7 @@ CODEX_USAGE_ARCHS="$(uname -m)" ./build-app.sh dist
 codex app-server --stdio
 ```
 
-并发送只读的 `account/rateLimits/read` 请求。应用不会读取或保存登录 Cookie、访问令牌、对话内容，也不包含遥测或第三方分析服务。点击“官方 Usage”时才会由系统浏览器打开 OpenAI Usage 页面。
+并发送只读的 `account/rateLimits/read` 请求。应用不会读取或保存登录 Cookie、访问令牌、对话内容，也不包含遥测或第三方分析服务。点击“官方 Usage”时才会由系统浏览器打开 OpenAI Usage 页面。配置 OpenCode Go 后，应用还会携带环境变量中的密钥向 OpenCode Go 用量接口发送一次只读请求。
 
 完整说明见 [隐私说明](docs/PRIVACY.md)。
 

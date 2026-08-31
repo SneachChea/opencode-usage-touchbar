@@ -20,13 +20,35 @@
 - Optional launch at login and automatic refresh every five minutes.
 - Touch Bar progress, percentages, reset times, and manual refresh.
 - Optional automatic Touch Bar presentation while Codex is frontmost.
-- No third-party dependencies and no separate API key.
+- Optional OpenCode Go usage (rolling, weekly, and monthly) in the menu bar, menu, and Touch Bar.
+- No third-party dependencies.
 
 ## Requirements
 
 - macOS 14.0 or later.
 - Codex desktop installed and signed in, or a compatible `codex` executable in a common installation path.
+- OpenCode Go display is optional and needs your OpenCode Go API key (see below).
 - Touch Bar features require a Touch Bar-equipped MacBook Pro. The menu bar works on other Macs.
+
+## OpenCode Go usage
+
+OpenCode Go usage is shown when an API key is available. Enter your OpenCode
+Go API key in the app's Settings — it is stored securely in the macOS Keychain
+and used to call the read-only OpenCode Go usage endpoint
+(`https://opencode.ai/zen/go/v1/usage`). The menu bar, menu, and Touch Bar
+then show the rolling (5-hour), weekly, and monthly remaining usage. Use
+“Remove Key” in Settings to delete the stored key.
+
+As an alternative, the app process can provide the key through the
+`OPENCODE_GO_API_KEY` environment variable (for example when launching from a
+terminal):
+
+```bash
+OPENCODE_GO_API_KEY="opencode-..." open "dist/Codex Usage Bar.app"
+```
+
+A key stored in the Keychain takes precedence over the environment variable.
+Without any key, the menu shows a hint and Codex-only usage.
 
 ## Install
 
@@ -61,7 +83,7 @@ The app launches the locally installed:
 codex app-server --stdio
 ```
 
-and sends the read-only `account/rateLimits/read` request. It does not read or store cookies, access tokens, or conversation content, and contains no telemetry or third-party analytics.
+and sends the read-only `account/rateLimits/read` request. It does not read or store cookies, access tokens, or conversation content, and contains no telemetry or third-party analytics. When OpenCode Go is configured, the app also sends one read-only request to the OpenCode Go usage endpoint with the environment-provided key.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

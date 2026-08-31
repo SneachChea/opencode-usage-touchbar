@@ -1,6 +1,8 @@
 import AppKit
 import Combine
+import Darwin
 import ObjectiveC
+import Security
 import ServiceManagement
 import SwiftUI
 
@@ -24,6 +26,13 @@ struct UsageSnapshot: Sendable {
     let fetchedAt: Date
 }
 
+struct OpenCodeGoUsageSnapshot: Sendable {
+    let rolling: RateWindow?
+    let weekly: RateWindow?
+    let monthly: RateWindow?
+    let fetchedAt: Date
+}
+
 enum UsageClientError: LocalizedError {
     case codexNotFound
     case launchFailed(String)
@@ -43,6 +52,31 @@ enum UsageClientError: LocalizedError {
             return L10n.string("error_invalid_response", language: language)
         case .server(let message):
             return L10n.format("error_server", language: language, message)
+        }
+    }
+
+    var errorDescription: String? { message(language: .system) }
+}
+
+enum OpenCodeGoUsageClientError: LocalizedError, Equatable {
+    case missingAPIKey
+    case invalidCredentials
+    case timedOut
+    case invalidResponse
+    case server(String)
+
+    func message(language: AppLanguage) -> String {
+        switch self {
+        case .missingAPIKey:
+            return L10n.string("error_opencode_go_key_missing", language: language)
+        case .invalidCredentials:
+            return L10n.string("error_opencode_go_invalid_credentials", language: language)
+        case .timedOut:
+            return L10n.string("error_timeout", language: language)
+        case .invalidResponse:
+            return L10n.string("error_opencode_go_invalid_response", language: language)
+        case .server(let message):
+            return L10n.format("error_opencode_go_server", language: language, message)
         }
     }
 
@@ -224,6 +258,191 @@ enum CodexUsageClient {
     }
 }
 
+enum OpenCodeGoUsageClient {
+    private static let usageURL = URL(string: "https://opencode.ai/zen/go/v1/usage")!
+    private static var cachedAPIKey: String?
+
+    static func cacheAPIKey(_ key: String?) {
+        cachedAPIKey = key
+    }
+
+    static var apiKey: String? {
+        if let cached = cachedAPIKey, !cached.isEmpty {
+            return cached
+        }
+        if let stored = KeychainStore.loadOpenCodeGoAPIKey(), !stored.isEmpty {
+            return stored
+        }
+        let value = ProcessInfo.processInfo.environment["OPENCODE_GO_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty ?? true) ? nil : value
+    }
+
+    static func fetch() async throws -> OpenCodeGoUsageSnapshot {
+        guard let apiKey else { throw OpenCodeGoUsageClientError.missingAPIKey }
+
+        var request = URLRequest(url: usageURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let session = URLSession(configuration: .ephemeral, delegate: RedirectGuard(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        do {
+            let (data, response) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+                group.addTask {
+                    try await session.data(for: request)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 20_000_000_000)
+                    throw OpenCodeGoUsageClientError.timedOut
+                }
+                guard let first = try await group.next() else {
+                    throw OpenCodeGoUsageClientError.timedOut
+                }
+                group.cancelAll()
+                return first
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw OpenCodeGoUsageClientError.invalidResponse
+            }
+            switch http.statusCode {
+            case 200:
+                return try parse(data)
+            case 401, 403:
+                throw OpenCodeGoUsageClientError.invalidCredentials
+            default:
+                throw OpenCodeGoUsageClientError.server(serverMessage(from: data) ?? "HTTP \(http.statusCode)")
+            }
+        } catch let error as OpenCodeGoUsageClientError {
+            throw error
+        } catch let error as URLError where error.code == .timedOut {
+            throw OpenCodeGoUsageClientError.timedOut
+        } catch {
+            throw OpenCodeGoUsageClientError.server(error.localizedDescription)
+        }
+    }
+
+    static func parse(_ data: Data) throws -> OpenCodeGoUsageSnapshot {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let usage = object["usage"] as? [String: Any] else {
+            throw OpenCodeGoUsageClientError.invalidResponse
+        }
+        guard let rolling = parseWindow(usage["rolling"], durationMinutes: 5 * 60) else {
+            throw OpenCodeGoUsageClientError.invalidResponse
+        }
+        return OpenCodeGoUsageSnapshot(
+            rolling: rolling,
+            weekly: parseWindow(usage["weekly"], durationMinutes: 7 * 24 * 60),
+            monthly: parseWindow(usage["monthly"], durationMinutes: nil),
+            fetchedAt: Date()
+        )
+    }
+
+    private static func parseWindow(_ value: Any?, durationMinutes: Int?) -> RateWindow? {
+        guard let object = value as? [String: Any],
+              let percent = (object["percent"] as? NSNumber)?.intValue else {
+            return nil
+        }
+        return RateWindow(
+            usedPercent: percent,
+            durationMinutes: durationMinutes,
+            resetsAt: parseDate(object["resetsAt"])
+        )
+    }
+
+    private static func parseDate(_ value: Any?) -> Date? {
+        guard let string = value as? String else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
+    }
+
+    private static func serverMessage(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let error = object["error"] as? [String: Any], let message = error["message"] as? String {
+            return message
+        }
+        return object["message"] as? String
+    }
+}
+
+private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let sourceHost = task.originalRequest?.url?.host?.lowercased()
+        let destinationHost = request.url?.host?.lowercased()
+        if sourceHost != nil, sourceHost == destinationHost, request.url?.scheme?.lowercased() == "https" {
+            completionHandler(request)
+        } else {
+            completionHandler(nil)
+        }
+    }
+}
+
+private enum KeychainStore {
+    private static let service = "com.local.codexusagebar"
+    private static let account = "opencode-go-api-key"
+
+    static func loadOpenCodeGoAPIKey() -> String? {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func saveOpenCodeGoAPIKey(_ key: String) throws {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw KeychainError.status(errSecParam) }
+        let data = Data(trimmed.utf8)
+        var query = baseQuery()
+        if SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess {
+            let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            guard status == errSecSuccess else { throw KeychainError.status(status) }
+        } else {
+            query[kSecValueData as String] = data
+            let status = SecItemAdd(query as CFDictionary, nil)
+            guard status == errSecSuccess else { throw KeychainError.status(status) }
+        }
+    }
+
+    static func deleteOpenCodeGoAPIKey() {
+        SecItemDelete(baseQuery() as CFDictionary)
+    }
+
+    private static func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+    }
+}
+
+private enum KeychainError: LocalizedError {
+    case status(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .status(let status):
+            return SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
+        }
+    }
+}
+
 private final class LockedFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = false
@@ -247,6 +466,12 @@ final class UsageStore: ObservableObject {
     @Published var snapshot: UsageSnapshot?
     @Published var errorMessage: String?
     @Published var isLoading = false
+    @Published var openCodeGoSnapshot: OpenCodeGoUsageSnapshot?
+    @Published var openCodeGoErrorMessage: String?
+    @Published var openCodeGoIsLoading = false
+    @Published var openCodeGoKeyStored: Bool
+
+    var openCodeGoConfigured: Bool { OpenCodeGoUsageClient.apiKey != nil }
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var menuIconName: String {
         didSet { UserDefaults.standard.set(menuIconName, forKey: "menuIconName") }
@@ -269,11 +494,16 @@ final class UsageStore: ObservableObject {
             if let lastUsageError {
                 errorMessage = lastUsageError.message(language: appLanguage)
             }
+            if let lastOpenCodeGoError {
+                openCodeGoErrorMessage = lastOpenCodeGoError.message(language: appLanguage)
+            }
         }
     }
 
     private var refreshTask: Task<Void, Never>?
     private var lastUsageError: UsageClientError?
+    private var lastOpenCodeGoError: OpenCodeGoUsageClientError?
+    private var openCodeGoFetchGeneration = 0
 
     init() {
         let defaults = UserDefaults.standard
@@ -283,6 +513,7 @@ final class UsageStore: ObservableObject {
         touchBarEnabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
         touchBarWhenCodexActive = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
         appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
+        openCodeGoKeyStored = KeychainStore.loadOpenCodeGoAPIKey() != nil
         refresh()
         refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -298,12 +529,27 @@ final class UsageStore: ObservableObject {
     }
 
     var menuTitle: String {
+        let codexPart: String
         if let snapshot {
             let fiveHour = snapshot.primary.map { "\($0.remainingPercent)%" } ?? "–"
             let weekly = snapshot.secondary.map { "\($0.remainingPercent)%" } ?? "–"
-            return "\(fiveHour)·\(weekly)"
+            codexPart = openCodeGoConfigured ? "C \(fiveHour)·\(weekly)" : "\(fiveHour)·\(weekly)"
+        } else {
+            codexPart = isLoading ? "…" : "!"
         }
-        return isLoading ? "…" : "!"
+
+        guard openCodeGoConfigured else { return codexPart }
+
+        let goPart: String
+        if let go = openCodeGoSnapshot {
+            let rolling = go.rolling.map { "\($0.remainingPercent)%" } ?? "–"
+            let weekly = go.weekly.map { "\($0.remainingPercent)%" } ?? "–"
+            let monthly = go.monthly.map { "\($0.remainingPercent)%" } ?? "–"
+            goPart = "\(rolling)·\(weekly)·\(monthly)"
+        } else {
+            goPart = openCodeGoIsLoading ? "…" : "–"
+        }
+        return "\(codexPart) | G \(goPart)"
     }
 
     func tr(_ key: String) -> String {
@@ -322,6 +568,11 @@ final class UsageStore: ObservableObject {
     }
 
     func refresh() {
+        refreshCodex()
+        refreshOpenCodeGo()
+    }
+
+    private func refreshCodex() {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
@@ -341,6 +592,59 @@ final class UsageStore: ObservableObject {
             }
             isLoading = false
         }
+    }
+
+    private func refreshOpenCodeGo() {
+        guard openCodeGoConfigured, !openCodeGoIsLoading else { return }
+        openCodeGoFetchGeneration += 1
+        let generation = openCodeGoFetchGeneration
+        openCodeGoIsLoading = true
+        openCodeGoErrorMessage = nil
+        lastOpenCodeGoError = nil
+
+        Task {
+            do {
+                let value = try await OpenCodeGoUsageClient.fetch()
+                guard generation == openCodeGoFetchGeneration else { return }
+                openCodeGoSnapshot = value
+            } catch let error as OpenCodeGoUsageClientError {
+                guard generation == openCodeGoFetchGeneration else { return }
+                lastOpenCodeGoError = error
+                openCodeGoErrorMessage = error.message(language: appLanguage)
+            } catch {
+                guard generation == openCodeGoFetchGeneration else { return }
+                openCodeGoErrorMessage = error.localizedDescription
+            }
+            if generation == openCodeGoFetchGeneration {
+                openCodeGoIsLoading = false
+            }
+        }
+    }
+
+    func saveOpenCodeGoAPIKey(_ key: String) -> String? {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try KeychainStore.saveOpenCodeGoAPIKey(trimmed)
+        } catch {
+            return tr("error_opencode_go_key_save", error.localizedDescription)
+        }
+        OpenCodeGoUsageClient.cacheAPIKey(trimmed)
+        openCodeGoKeyStored = true
+        openCodeGoFetchGeneration += 1
+        openCodeGoIsLoading = false
+        refreshOpenCodeGo()
+        return nil
+    }
+
+    func removeOpenCodeGoAPIKey() {
+        KeychainStore.deleteOpenCodeGoAPIKey()
+        OpenCodeGoUsageClient.cacheAPIKey(nil)
+        openCodeGoFetchGeneration += 1
+        openCodeGoIsLoading = false
+        openCodeGoKeyStored = false
+        lastOpenCodeGoError = nil
+        openCodeGoSnapshot = nil
+        openCodeGoErrorMessage = nil
     }
 
     func openDashboard() {
@@ -413,6 +717,13 @@ struct UsagePopover: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    onShowSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help(store.tr("settings"))
                 if store.isLoading {
                     ProgressView()
                         .controlSize(.small)
@@ -454,6 +765,45 @@ struct UsagePopover: View {
             Divider()
 
             HStack {
+                Text(store.tr("go_title"))
+                    .font(.headline)
+                Spacer()
+                if store.openCodeGoIsLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if let go = store.openCodeGoSnapshot {
+                UsageWindowRow(store: store, titleKey: "go_rolling_quota", window: go.rolling)
+                UsageWindowRow(store: store, titleKey: "go_weekly_quota", window: go.weekly)
+                UsageWindowRow(store: store, titleKey: "go_monthly_quota", window: go.monthly)
+
+                Text(store.tr("updated_at", store.formatDate(go.fetchedAt, includeDate: false)))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if !store.openCodeGoConfigured {
+                Text(store.tr("error_opencode_go_key_missing"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let message = store.openCodeGoErrorMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let message = store.openCodeGoErrorMessage, store.openCodeGoSnapshot != nil {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            HStack {
                 Button {
                     store.refresh()
                 } label: {
@@ -468,14 +818,6 @@ struct UsagePopover: View {
                 }
 
                 Spacer()
-
-                Button {
-                    onShowSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .help(store.tr("settings"))
-                .fixedSize()
 
                 Button {
                     NSApplication.shared.terminate(nil)
@@ -513,14 +855,57 @@ struct UsagePopover: View {
 }
 
 enum TouchBarSystemModal {
+    static let systemTrayIdentifier = NSTouchBarItem.Identifier("com.local.codexusagebar.touchbar")
+
     private static let presentSelector = NSSelectorFromString(
         "presentSystemModalTouchBar:placement:systemTrayItemIdentifier:"
     )
     private static let dismissSelector = NSSelectorFromString("dismissSystemModalTouchBar:")
+    private static let minimizeSelector = NSSelectorFromString("minimizeSystemModalTouchBar:")
+    private static let addSystemTrayItemSelector = NSSelectorFromString("addSystemTrayItem:")
+    private static let removeSystemTrayItemSelector = NSSelectorFromString("removeSystemTrayItem:")
+
+    private typealias SetControlStripPresence = @convention(c) (CFString, Bool) -> Void
+
+    nonisolated(unsafe) private static let dfrHandle: UnsafeMutableRawPointer? = dlopen(
+        "/System/Library/PrivateFrameworks/DFRFoundation.framework/DFRFoundation",
+        RTLD_NOW
+    )
+    private static let setControlStripPresence: SetControlStripPresence? = {
+        guard let dfrHandle,
+              let pointer = dlsym(dfrHandle, "DFRElementSetControlStripPresenceForIdentifier") else {
+            return nil
+        }
+        return unsafeBitCast(pointer, to: SetControlStripPresence.self)
+    }()
 
     static var isAvailable: Bool {
         class_getClassMethod(NSTouchBar.self, presentSelector) != nil &&
-            class_getClassMethod(NSTouchBar.self, dismissSelector) != nil
+            class_getClassMethod(NSTouchBar.self, dismissSelector) != nil &&
+            class_getClassMethod(NSTouchBarItem.self, addSystemTrayItemSelector) != nil &&
+            class_getClassMethod(NSTouchBarItem.self, removeSystemTrayItemSelector) != nil &&
+            setControlStripPresence != nil
+    }
+
+    static func addSystemTrayItem(_ item: NSTouchBarItem) -> Bool {
+        guard let method = class_getClassMethod(NSTouchBarItem.self, addSystemTrayItemSelector) else {
+            return false
+        }
+        typealias Function = @convention(c) (AnyObject, Selector, NSTouchBarItem) -> Void
+        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
+        function(NSTouchBarItem.self, addSystemTrayItemSelector, item)
+        setControlStripPresence?(systemTrayIdentifier.rawValue as CFString, true)
+        return true
+    }
+
+    static func removeSystemTrayItem(_ item: NSTouchBarItem) {
+        setControlStripPresence?(systemTrayIdentifier.rawValue as CFString, false)
+        guard let method = class_getClassMethod(NSTouchBarItem.self, removeSystemTrayItemSelector) else {
+            return
+        }
+        typealias Function = @convention(c) (AnyObject, Selector, NSTouchBarItem) -> Void
+        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
+        function(NSTouchBarItem.self, removeSystemTrayItemSelector, item)
     }
 
     static func present(_ touchBar: NSTouchBar) -> Bool {
@@ -540,9 +925,19 @@ enum TouchBarSystemModal {
             presentSelector,
             touchBar,
             1,
-            "com.local.codexusagebar.touchbar" as NSString
+            systemTrayIdentifier.rawValue as NSString
         )
         return true
+    }
+
+    static func minimize(_ touchBar: NSTouchBar) {
+        guard let method = class_getClassMethod(NSTouchBar.self, minimizeSelector) else {
+            dismiss(touchBar)
+            return
+        }
+        typealias Function = @convention(c) (AnyObject, Selector, NSTouchBar) -> Void
+        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
+        function(NSTouchBar.self, minimizeSelector, touchBar)
     }
 
     static func dismiss(_ touchBar: NSTouchBar) {
@@ -558,6 +953,10 @@ private extension NSTouchBarItem.Identifier {
     static let weeklyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.weekly")
     static let resetTimes = NSTouchBarItem.Identifier("com.local.codexusagebar.reset-times")
     static let refreshUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.refresh")
+    static let goRollingUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-rolling")
+    static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-weekly")
+    static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-monthly")
+    static let goResetTimes = NSTouchBarItem.Identifier("com.local.codexusagebar.go-reset-times")
 }
 
 final class TouchBarProgressView: NSView {
@@ -568,7 +967,7 @@ final class TouchBarProgressView: NSView {
         didSet { needsDisplay = true }
     }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 145, height: 5) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 110, height: 5) }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -596,6 +995,14 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private var weeklyProgress: TouchBarProgressView?
     private var resetLabel: NSTextField?
     private var refreshButton: NSButton?
+    private var systemTrayItem: NSCustomTouchBarItem?
+    private var goRollingLabel: NSTextField?
+    private var goRollingProgress: TouchBarProgressView?
+    private var goWeeklyLabel: NSTextField?
+    private var goWeeklyProgress: TouchBarProgressView?
+    private var goMonthlyLabel: NSTextField?
+    private var goMonthlyProgress: TouchBarProgressView?
+    private var goResetLabel: NSTextField?
     private var subscriptions = Set<AnyCancellable>()
     private var systemModalVisible = false
     private var codexIsFrontmost = false
@@ -608,19 +1015,25 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         touchBar.customizationIdentifier = NSTouchBar.CustomizationIdentifier(
             "com.local.codexusagebar.usage"
         )
-        touchBar.defaultItemIdentifiers = [
-            .fiveHourUsage,
-            .fixedSpaceSmall,
-            .weeklyUsage,
-            .fixedSpaceSmall,
-            .resetTimes,
-            .flexibleSpace,
-            .refreshUsage
-        ]
+        updateDefaultItemIdentifiers()
 
         Publishers.CombineLatest3(store.$snapshot, store.$isLoading, store.$errorMessage)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _, _ in self?.updateItems() }
+            .store(in: &subscriptions)
+
+        Publishers.CombineLatest3(
+            store.$openCodeGoSnapshot,
+            store.$openCodeGoIsLoading,
+            store.$openCodeGoErrorMessage
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _, _, _ in self?.updateItems() }
+        .store(in: &subscriptions)
+
+        store.$openCodeGoKeyStored
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateItems() }
             .store(in: &subscriptions)
 
         store.$appLanguage
@@ -639,9 +1052,9 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         .receive(on: RunLoop.main)
         .sink { [weak self] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication else { return }
+            as? NSRunningApplication else { return }
             self?.codexIsFrontmost = application.bundleIdentifier == "com.openai.codex"
-            self?.applyPresentationMode()
+            self?.applyPresentationMode(reassert: true)
         }
         .store(in: &subscriptions)
 
@@ -653,6 +1066,9 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     deinit {
         if systemModalVisible {
             TouchBarSystemModal.dismiss(touchBar)
+        }
+        if let systemTrayItem {
+            TouchBarSystemModal.removeSystemTrayItem(systemTrayItem)
         }
     }
 
@@ -680,7 +1096,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             label.textColor = .secondaryLabelColor
             label.alignment = .center
             label.lineBreakMode = .byTruncatingMiddle
-            label.widthAnchor.constraint(equalToConstant: 245).isActive = true
+            label.widthAnchor.constraint(equalToConstant: 160).isActive = true
             item.view = label
             item.customizationLabel = store.tr("reset_customization")
             resetLabel = label
@@ -699,6 +1115,37 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             refreshButton = button
             updateItems()
             return item
+        case .goRollingUsage:
+            let result = makeUsageItem(identifier: identifier, title: "5h", customizationKey: "go_quota_customization")
+            goRollingLabel = result.label
+            goRollingProgress = result.progress
+            updateItems()
+            return result.item
+        case .goWeeklyUsage:
+            let result = makeUsageItem(identifier: identifier, title: store.tr("weekly_prefix"), customizationKey: "go_quota_customization")
+            goWeeklyLabel = result.label
+            goWeeklyProgress = result.progress
+            updateItems()
+            return result.item
+        case .goMonthlyUsage:
+            let result = makeUsageItem(identifier: identifier, title: store.tr("monthly_prefix"), customizationKey: "go_quota_customization")
+            goMonthlyLabel = result.label
+            goMonthlyProgress = result.progress
+            updateItems()
+            return result.item
+        case .goResetTimes:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let label = NSTextField(labelWithString: store.tr("loading_reset"))
+            label.font = .systemFont(ofSize: 11, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingMiddle
+            label.widthAnchor.constraint(equalToConstant: 170).isActive = true
+            item.view = label
+            item.customizationLabel = store.tr("go_reset_customization")
+            goResetLabel = label
+            updateItems()
+            return item
         default:
             return nil
         }
@@ -706,7 +1153,8 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
 
     private func makeUsageItem(
         identifier: NSTouchBarItem.Identifier,
-        title: String
+        title: String,
+        customizationKey: String = "quota_customization"
     ) -> (item: NSCustomTouchBarItem, label: NSTextField, progress: TouchBarProgressView) {
         let item = NSCustomTouchBarItem(identifier: identifier)
         let label = NSTextField(labelWithString: "\(title) –")
@@ -714,7 +1162,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         label.alignment = .center
 
         let progress = TouchBarProgressView()
-        progress.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        progress.widthAnchor.constraint(equalToConstant: 110).isActive = true
         progress.heightAnchor.constraint(equalToConstant: 5).isActive = true
 
         let stack = NSStackView(views: [label, progress])
@@ -722,14 +1170,16 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         stack.alignment = .centerX
         stack.spacing = 3
         stack.edgeInsets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
-        stack.widthAnchor.constraint(equalToConstant: 155).isActive = true
+        stack.widthAnchor.constraint(equalToConstant: 120).isActive = true
 
         item.view = stack
-        item.customizationLabel = store.tr("quota_customization", title)
+        item.customizationLabel = store.tr(customizationKey, title)
         return (item, label, progress)
     }
 
     private func updateItems() {
+        updateDefaultItemIdentifiers()
+
         updateUsage(
             window: store.snapshot?.primary,
             prefix: "5h",
@@ -742,6 +1192,24 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             label: weeklyLabel,
             progress: weeklyProgress
         )
+        updateUsage(
+            window: store.openCodeGoSnapshot?.rolling,
+            prefix: "5h",
+            label: goRollingLabel,
+            progress: goRollingProgress
+        )
+        updateUsage(
+            window: store.openCodeGoSnapshot?.weekly,
+            prefix: store.tr("weekly_prefix"),
+            label: goWeeklyLabel,
+            progress: goWeeklyProgress
+        )
+        updateUsage(
+            window: store.openCodeGoSnapshot?.monthly,
+            prefix: store.tr("monthly_prefix"),
+            label: goMonthlyLabel,
+            progress: goMonthlyProgress
+        )
 
         if let snapshot = store.snapshot {
             let primaryReset = resetText(snapshot.primary?.resetsAt, short: true)
@@ -750,7 +1218,39 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         } else {
             resetLabel?.stringValue = store.isLoading ? store.tr("loading_usage") : store.tr("usage_unavailable")
         }
-        refreshButton?.isEnabled = !store.isLoading
+
+        if let go = store.openCodeGoSnapshot {
+            let rollingReset = resetText(go.rolling?.resetsAt, short: true)
+            let weeklyReset = resetText(go.weekly?.resetsAt, short: false)
+            let monthlyReset = resetText(go.monthly?.resetsAt, short: false)
+            goResetLabel?.stringValue = store.tr("go_touch_bar_reset", rollingReset, weeklyReset, monthlyReset)
+        } else {
+            goResetLabel?.stringValue = store.openCodeGoIsLoading ? store.tr("loading_usage") : store.tr("usage_unavailable")
+        }
+        refreshButton?.isEnabled = !store.isLoading && !store.openCodeGoIsLoading
+    }
+
+    private func updateDefaultItemIdentifiers() {
+        let goIdentifiers: [NSTouchBarItem.Identifier] = store.openCodeGoConfigured
+            ? [
+                .goRollingUsage,
+                .fixedSpaceSmall,
+                .goWeeklyUsage,
+                .fixedSpaceSmall,
+                .goMonthlyUsage,
+                .fixedSpaceSmall,
+                .goResetTimes
+            ]
+            : []
+        let identifiers: [NSTouchBarItem.Identifier] = [
+            .fiveHourUsage,
+            .fixedSpaceSmall,
+            .weeklyUsage,
+            .fixedSpaceSmall,
+            .resetTimes
+        ] + goIdentifiers + [.flexibleSpace, .refreshUsage]
+        guard touchBar.defaultItemIdentifiers != identifiers else { return }
+        touchBar.defaultItemIdentifiers = identifiers
     }
 
     private func updateUsage(
@@ -785,18 +1285,76 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         return store.formatDate(date, includeDate: !short)
     }
 
-    private func applyPresentationMode() {
+    private func applyPresentationMode(reassert: Bool = false) {
         NSApp.touchBar = store.touchBarEnabled ? touchBar : nil
-        let shouldShowSystemModal = store.touchBarEnabled &&
+        let canUseSystemModal = store.touchBarEnabled &&
             store.touchBarWhenCodexActive &&
-            codexIsFrontmost &&
             TouchBarSystemModal.isAvailable
 
+        if canUseSystemModal {
+            installSystemTrayItem()
+        } else {
+            if systemModalVisible {
+                TouchBarSystemModal.dismiss(touchBar)
+                systemModalVisible = false
+            }
+            removeSystemTrayItem()
+        }
+
+        let shouldShowSystemModal = canUseSystemModal && codexIsFrontmost
+
+        if reassert && shouldShowSystemModal && systemModalVisible {
+            TouchBarSystemModal.dismiss(touchBar)
+            systemModalVisible = false
+        }
         if shouldShowSystemModal && !systemModalVisible {
             systemModalVisible = TouchBarSystemModal.present(touchBar)
         } else if !shouldShowSystemModal && systemModalVisible {
+            TouchBarSystemModal.minimize(touchBar)
+            systemModalVisible = false
+        }
+    }
+
+    func shutDown() {
+        if systemModalVisible {
             TouchBarSystemModal.dismiss(touchBar)
             systemModalVisible = false
+        }
+        removeSystemTrayItem()
+        NSApp.touchBar = nil
+    }
+
+    private func installSystemTrayItem() {
+        guard systemTrayItem == nil else { return }
+        let item = NSCustomTouchBarItem(identifier: TouchBarSystemModal.systemTrayIdentifier)
+        let button = NSButton(
+            image: NSImage(
+                systemSymbolName: "gauge.with.dots.needle.67percent",
+                accessibilityDescription: store.tr("settings")
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(presentFromSystemTray)
+        )
+        button.bezelStyle = .texturedRounded
+        button.setAccessibilityLabel(store.tr("settings"))
+        item.view = button
+        guard TouchBarSystemModal.addSystemTrayItem(item) else { return }
+        systemTrayItem = item
+    }
+
+    private func removeSystemTrayItem() {
+        guard let systemTrayItem else { return }
+        TouchBarSystemModal.removeSystemTrayItem(systemTrayItem)
+        self.systemTrayItem = nil
+    }
+
+    @objc private func presentFromSystemTray() {
+        guard store.touchBarEnabled, TouchBarSystemModal.isAvailable else { return }
+        if systemModalVisible {
+            TouchBarSystemModal.minimize(touchBar)
+            systemModalVisible = false
+        } else {
+            systemModalVisible = TouchBarSystemModal.present(touchBar)
         }
     }
 
@@ -807,6 +1365,8 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
 
 struct SettingsView: View {
     @ObservedObject var store: UsageStore
+    @State private var apiKeyInput = ""
+    @State private var keyError: String?
 
     private let icons = [
         ("gauge.with.dots.needle.67percent", "icon_gauge"),
@@ -880,11 +1440,43 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section(store.tr("go_title")) {
+                SecureField(store.tr("opencode_go_key_placeholder"), text: $apiKeyInput)
+                HStack {
+                    Button(store.tr("opencode_go_key_save")) {
+                        keyError = store.saveOpenCodeGoAPIKey(apiKeyInput)
+                        if keyError == nil {
+                            apiKeyInput = ""
+                        }
+                    }
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if store.openCodeGoKeyStored {
+                        Button(store.tr("opencode_go_key_remove"), role: .destructive) {
+                            store.removeOpenCodeGoAPIKey()
+                            keyError = nil
+                        }
+                    }
+                }
+
+                Text(store.openCodeGoKeyStored
+                     ? store.tr("opencode_go_key_stored")
+                     : store.tr("opencode_go_key_not_stored"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let keyError {
+                    Text(keyError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding(4)
         .environment(\.locale, store.appLanguage.locale)
-        .frame(width: 440, height: 500)
+        .frame(width: 440, height: 560)
     }
 
     @ViewBuilder
@@ -912,6 +1504,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var usageMenu: NSMenu?
+    private var usageHostingView: NSHostingView<UsagePopover>?
+    private var usageScrollView: NSScrollView?
     private var settingsWindow: NSWindow?
     private var touchBarController: UsageTouchBarController?
     private var showSettingsAfterMenuCloses = false
@@ -937,9 +1531,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Publishers.CombineLatest3(store.$snapshot, store.$isLoading, store.$errorMessage)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _, _ in
-                self?.updateStatusItem()
+                self?.updateStatusItemAndMenuLayout()
             }
             .store(in: &subscriptions)
+
+        Publishers.CombineLatest3(
+            store.$openCodeGoSnapshot,
+            store.$openCodeGoIsLoading,
+            store.$openCodeGoErrorMessage
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _, _, _ in
+            self?.updateStatusItemAndMenuLayout()
+        }
+        .store(in: &subscriptions)
 
         Publishers.CombineLatest3(store.$menuIconName, store.$menuIconSize, store.$menuTextSize)
             .receive(on: RunLoop.main)
@@ -951,10 +1556,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.settingsWindow?.title = self.store.tr("settings_window_title")
+                self.updateMenuLayoutSoon()
             }
             .store(in: &subscriptions)
 
         updateStatusItem()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        touchBarController?.shutDown()
     }
 
     private func updateStatusItem() {
@@ -985,6 +1595,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.imageScaling = .scaleProportionallyDown
     }
 
+    private func updateStatusItemAndMenuLayout() {
+        updateStatusItem()
+        updateMenuLayoutSoon()
+    }
+
+    private func updateMenuLayoutSoon() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateMenuLayout()
+        }
+    }
+
+    private func updateMenuLayout() {
+        guard let hostingView = usageHostingView, let scrollView = usageScrollView else { return }
+        hostingView.layoutSubtreeIfNeeded()
+        let contentHeight = max(1, hostingView.fittingSize.height)
+        let screenHeight = NSScreen.main?.visibleFrame.height ?? 600
+        let visibleHeight = max(240, screenHeight - 80)
+        let menuHeight = min(contentHeight, visibleHeight)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 330, height: contentHeight)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 330, height: menuHeight)
+        scrollView.hasVerticalScroller = contentHeight > menuHeight
+    }
+
     private func makeUsageMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -996,11 +1629,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             store: store,
             onShowSettings: { [weak self] in self?.requestSettings() }
         ))
-        hostingView.frame = NSRect(x: 0, y: 0, width: 330, height: 365)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-        contentItem.view = hostingView
+        usageHostingView = hostingView
+
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.documentView = hostingView
+        usageScrollView = scrollView
+        contentItem.view = scrollView
         menu.addItem(contentItem)
+        updateMenuLayout()
         return menu
     }
 
@@ -1022,7 +1664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentSettingsWindow() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 500),
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -1056,6 +1698,23 @@ struct CodexUsageBarApp: App {
                 fputs("ERROR \(error.localizedDescription)\n", stderr)
                 exit(EXIT_FAILURE)
             }
+        }
+        if CommandLine.arguments.contains("--self-test-opencode-go") {
+            let semaphore = DispatchSemaphore(value: 0)
+            Task.detached {
+                do {
+                    let snapshot = try await OpenCodeGoUsageClient.fetch()
+                    let rolling = snapshot.rolling?.remainingPercent.description ?? "n/a"
+                    let weekly = snapshot.weekly?.remainingPercent.description ?? "n/a"
+                    let monthly = snapshot.monthly?.remainingPercent.description ?? "n/a"
+                    print("OK go 5h=\(rolling)% weekly=\(weekly)% monthly=\(monthly)%")
+                    exit(EXIT_SUCCESS)
+                } catch {
+                    fputs("ERROR \(error.localizedDescription)\n", stderr)
+                    exit(EXIT_FAILURE)
+                }
+            }
+            semaphore.wait()
         }
     }
 

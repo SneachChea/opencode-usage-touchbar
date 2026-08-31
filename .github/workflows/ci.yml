@@ -21,6 +21,9 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Run tests
+        run: swift test
+
       - name: Build universal release
         run: ./scripts/release.sh
 

@@ -9,6 +9,10 @@ let package = Package(
         .executable(name: "CodexUsageBar", targets: ["CodexUsageBar"])
     ],
     targets: [
-        .executableTarget(name: "CodexUsageBar")
+        .executableTarget(name: "CodexUsageBar"),
+        .testTarget(
+            name: "CodexUsageBarTests",
+            dependencies: ["CodexUsageBar"]
+        )
     ]
 )

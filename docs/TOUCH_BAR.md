@@ -7,10 +7,17 @@ The application creates an `NSTouchBar` containing:
 - five-hour usage and progress;
 - weekly usage and progress;
 - reset timestamps;
-- a manual refresh button.
+- OpenCode Go rolling, weekly, and monthly usage and progress;
+- OpenCode Go reset timestamps;
+- a manual refresh button (refreshes both Codex and OpenCode Go).
 
 The bar is assigned to `NSApplication.touchBar` while Touch Bar display is
 enabled. This path uses public AppKit APIs.
+
+The automatic presentation feature remains limited to Codex being frontmost.
+OpenCode Go runs inside a terminal, which cannot be distinguished reliably
+from other terminal applications, so no automatic presentation is attempted
+for it.
 
 ## Automatic presentation while Codex is frontmost
 
@@ -24,14 +31,19 @@ dismissSystemModalTouchBar:
 ```
 
 These AppKit selectors are undocumented. Calls are isolated behind runtime
-availability checks. The feature is enabled only when:
+availability checks. The controller also registers a matching system-tray item
+through the private `NSTouchBarItem` API and DFR control-strip symbol; without
+that registration, the modal bar has no valid system-tray anchor. The feature
+is enabled only when:
 
 1. Touch Bar display is enabled;
 2. automatic Codex presentation is enabled;
 3. the frontmost application bundle identifier is `com.openai.codex`;
-4. both selectors exist in the current AppKit runtime.
+4. the required AppKit selectors and DFR symbol exist in the current runtime.
 
 The modal bar is dismissed when Codex is no longer frontmost.
+It is re-presented after application switches because macOS can reclaim a
+system-modal bar during activation changes.
 
 ## Compatibility and review
 

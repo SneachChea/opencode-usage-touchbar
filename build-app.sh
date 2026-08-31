@@ -32,14 +32,12 @@ else
 fi
 
 asset_output="$project_dir/.build/compiled-assets"
-mkdir -p "$asset_output"
-xcrun actool \
-  --compile "$asset_output" \
-  --platform macosx \
-  --minimum-deployment-target 14.0 \
-  --app-icon AppIcon \
-  --output-partial-info-plist "$asset_output/asset-info.plist" \
-  "Resources/Assets.xcassets"
+iconset_output="$asset_output/AppIcon.iconset"
+rm -rf "$asset_output"
+mkdir -p "$iconset_output"
+cp Resources/Assets.xcassets/AppIcon.appiconset/*.png "$iconset_output/"
+cp Resources/Assets.xcassets/AppIcon.appiconset/Contents.json "$iconset_output/"
+iconutil -c icns "$iconset_output" -o "$asset_output/AppIcon.icns"
 
 if [[ -e "$app_dir" ]]; then
   rm -rf "$app_dir"
@@ -47,7 +45,6 @@ fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$universal_binary" "$app_dir/Contents/MacOS/CodexUsageBar"
 cp "Info.plist" "$app_dir/Contents/Info.plist"
-cp "$asset_output/Assets.car" "$app_dir/Contents/Resources/Assets.car"
 cp "$asset_output/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 chmod +x "$app_dir/Contents/MacOS/CodexUsageBar"
 

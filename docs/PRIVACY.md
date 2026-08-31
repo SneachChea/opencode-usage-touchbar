@@ -16,6 +16,11 @@ the read-only `account/rateLimits/read` request. The response may include:
 This data is held in application memory for display. It is not written to a
 database or transmitted by Codex Usage Bar.
 
+When OpenCode Go is configured, the app additionally reads remaining usage for
+the rolling (5-hour), weekly, and monthly windows, plus their reset
+timestamps, from the OpenCode Go usage endpoint. This data is also held in
+memory for display only.
+
 ## Data the app stores
 
 The following preferences are saved using macOS `UserDefaults`:
@@ -28,15 +33,28 @@ Launch-at-login state is managed by Apple's `SMAppService`.
 
 ## Network behavior
 
-Codex Usage Bar does not make its own network requests. The local Codex process
-may communicate with OpenAI as part of its normal signed-in operation. Clicking
-“Official Usage” asks macOS to open `https://chatgpt.com/codex/settings/usage`
-in the default browser.
+Codex Usage Bar does not make its own network requests for Codex data. The
+local Codex process may communicate with OpenAI as part of its normal
+signed-in operation. Clicking “Official Usage” asks macOS to open
+`https://chatgpt.com/codex/settings/usage` in the default browser.
+
+When OpenCode Go is enabled, the app sends one direct HTTPS request to
+`https://opencode.ai/zen/go/v1/usage` per refresh cycle, authenticated with
+the `OPENCODE_GO_API_KEY` bearer token. The request is read-only and carries
+no telemetry.
 
 ## Credentials
 
-The app does not request, copy, log, or persist Codex cookies, access tokens, or
-API keys. Authentication remains owned by the installed Codex client.
+The app does not request, copy, log, or persist Codex cookies, access tokens,
+or API keys. Authentication remains owned by the installed Codex client.
+
+The OpenCode Go API key can be entered in Settings, where it is stored only in
+the macOS Keychain (`kSecClassGenericPassword`, accessible after first unlock).
+It is never written to `UserDefaults`, logs, or files, and it is sent only to
+the OpenCode Go endpoint as a bearer token. As a fallback, the key may also be
+provided through the `OPENCODE_GO_API_KEY` environment variable of the app
+process; the Keychain value takes precedence. An app launched from Finder does
+not inherit shell exports.
 
 ## Removing local data
 

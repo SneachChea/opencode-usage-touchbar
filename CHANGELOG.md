@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- OpenCode Go usage tracking alongside Codex: rolling (5-hour), weekly, and monthly limits.
+- OpenCode Go section in the usage menu with reset times and error reporting.
+- OpenCode Go progress, percentages, and reset times on the Touch Bar.
+- OpenCode Go API key entry in Settings, stored securely in the macOS Keychain (environment variable fallback).
+- `--self-test-opencode-go` live check and unit tests for response parsing.
+
 ## [2.1.0] - 2026-08-31
 
 ### Added

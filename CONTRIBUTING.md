@@ -5,7 +5,7 @@ Contributions are welcome.
 ## Development requirements
 
 - macOS 14 or later
-- Xcode command-line tools with Swift 5.10 or later
+- Xcode command-line tools with Swift 5.10 or later (full Xcode is required to run `swift test`)
 - Codex desktop app or a compatible local `codex` executable for live testing
 
 ## Workflow
@@ -15,7 +15,10 @@ Contributions are welcome.
 3. Run `./build-app.sh dist` to verify the application bundle.
 4. Run `dist/Codex\ Usage\ Bar.app/Contents/MacOS/CodexUsageBar --self-test`
    while Codex is signed in.
-5. Describe user-visible changes and compatibility implications in the pull
+5. For OpenCode Go changes, run
+   `dist/Codex\ Usage\ Bar.app/Contents/MacOS/CodexUsageBar --self-test-opencode-go`
+   with `OPENCODE_GO_API_KEY` exported, and run `swift test` (requires Xcode).
+6. Describe user-visible changes and compatibility implications in the pull
    request.
 
 Please keep changes scoped and avoid adding analytics, remote services, or
