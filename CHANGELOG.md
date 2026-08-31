@@ -11,6 +11,18 @@ All notable changes to this project will be documented in this file.
 - OpenCode Go progress, percentages, and reset times on the Touch Bar.
 - OpenCode Go API key entry in Settings, stored securely in the macOS Keychain (environment variable fallback).
 - `--self-test-opencode-go` live check and unit tests for response parsing.
+- Persistent Touch Bar: new `Always visible` mode keeps the quotas on the
+  Touch Bar across app switches (Terminal, Firefox, Finder, VS Code, Safari),
+  sharing the bar with the Control Strip (placement 0), re-asserted on every
+  app activation and screen unlock.
+- `x` button at the right end of the Touch Bar hides the usage info and
+  restores the native Touch Bar (re-show from the popover, or change mode).
+- OpenCode logo marks the OpenCode Go section on the Touch Bar.
+- Codex items are omitted from the Touch Bar when no local Codex executable
+  is found; the section reappears automatically once Codex is installed.
+- Touch Bar settings replaced by a three-mode picker: Always visible /
+  Only while Codex is active / Disabled. Existing preferences migrate
+  automatically; dismissing restores the native Touch Bar immediately.
 
 ## [2.1.0] - 2026-08-31
 

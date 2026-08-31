@@ -9,41 +9,82 @@ The application creates an `NSTouchBar` containing:
 - reset timestamps;
 - OpenCode Go rolling, weekly, and monthly usage and progress;
 - OpenCode Go reset timestamps;
-- a manual refresh button (refreshes both Codex and OpenCode Go).
+- a manual refresh button (refreshes both Codex and OpenCode Go);
+- an `x` button (right end of the bar) that hides the usage information and
+  restores the native Touch Bar until the user re-shows it from the popover
+  or changes the Touch Bar mode.
 
-The bar is assigned to `NSApplication.touchBar` while Touch Bar display is
-enabled. This path uses public AppKit APIs.
+The bar is assigned to `NSApplication.touchBar` unless the Touch Bar mode is
+`Disabled`. This path uses public AppKit APIs and shows the bar only while
+this application itself is active; it is also the automatic fallback when the
+system-modal presentation below is unavailable.
 
-The automatic presentation feature remains limited to Codex being frontmost.
-OpenCode Go runs inside a terminal, which cannot be distinguished reliably
-from other terminal applications, so no automatic presentation is attempted
-for it.
+## Persistent presentation
 
-## Automatic presentation while Codex is frontmost
-
-macOS does not provide a public API for one application to keep its full Touch
-Bar visible while another application owns keyboard focus. To support the
-requested behavior on Touch Bar MacBook Pro models, the app optionally invokes:
+Settings offer three Touch Bar modes:
 
 ```text
-presentSystemModalTouchBar:placement:systemTrayItemIdentifier:
-dismissSystemModalTouchBar:
+● Always visible                         (default)
+○ Only while Codex is active
+○ Disabled
 ```
 
-These AppKit selectors are undocumented. Calls are isolated behind runtime
-availability checks. The controller also registers a matching system-tray item
-through the private `NSTouchBarItem` API and DFR control-strip symbol; without
-that registration, the modal bar has no valid system-tray anchor. The feature
-is enabled only when:
+macOS does not provide a public API for one application to keep its full
+Touch Bar visible while another application owns keyboard focus. Persistent
+display uses the same undocumented mechanism as MTMR, Pock, and
+claude-usage-touchbar, isolated in `TouchBarSystemModal`:
 
-1. Touch Bar display is enabled;
-2. automatic Codex presentation is enabled;
-3. the frontmost application bundle identifier is `com.openai.codex`;
-4. the required AppKit selectors and DFR symbol exist in the current runtime.
+```text
++[NSTouchBar presentSystemModalTouchBar:placement:systemTrayItemIdentifier:]
++[NSTouchBar dismissSystemModalTouchBar:]
++[NSTouchBar minimizeSystemModalTouchBar:]
+DFRSystemModalShowsCloseBoxWhenFrontMost()   (DFRFoundation private framework)
+```
 
-The modal bar is dismissed when Codex is no longer frontmost.
-It is re-presented after application switches because macOS can reclaim a
-system-modal bar during activation changes.
+Details:
+
+- Sections are conditional: the Codex group is only on the bar when a local
+  Codex executable is found; the OpenCode group (introduced by the OpenCode
+  logo) is only there when an API key is configured. An empty bar just shows
+  the refresh and `x` buttons.
+
+- Presentation uses `placement 0` with a `nil` system-tray identifier, which
+  shares the Touch Bar with the Apple Control Strip. The Control Strip stays
+  usable in every mode. Without a tray anchor, `x` uses
+  `dismissSystemModalTouchBar:` (deterministic restore); `minimize` is kept
+  only for the `Only while Codex is active` focus-out case.
+- `DFRSystemModalShowsCloseBoxWhenFrontMost(false)` hides the system close
+  box that would otherwise appear while this accessory app is frontmost.
+- macOS can reclaim a system-modal bar during app-activation changes, so the
+  bar is re-presented (cheap and idempotent) on every
+  `NSWorkspaceDidActivateApplicationNotification` and after the screen
+  unlocks (`com.apple.screenIsUnlocked`). This is what makes the quotas
+  survive Terminal → Firefox → Finder → VS Code switches.
+- App Nap is suppressed with
+  `ProcessInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep])`
+  so refreshes and re-presentation keep working while the app is in the
+  background.
+- In `Only while Codex is active` mode the modal bar is minimized when
+  Codex (`com.openai.codex`) is not frontmost. OpenCode Go runs inside a
+  terminal, which cannot be distinguished reliably from other terminal
+  applications, so it does not gate presentation.
+- All private calls sit behind runtime availability checks
+  (`TouchBarSystemModal.isAvailable`). When unavailable, the app silently
+  falls back to the public path.
+
+## Restoring the native Touch Bar
+
+The native Touch Bar is restored immediately when:
+
+- the mode is set to `Disabled` (dismisses the modal bar);
+- the `x` button is tapped (dismisses; re-show via the popover's
+  `Show Touch Bar` button or any mode change);
+- the mode is set to `Only while Codex is active` and Codex loses focus
+  (minimizes);
+- the application quits (`applicationWillTerminate` → `shutDown()` →
+  `dismissSystemModalTouchBar:`).
+
+Dismissing is synchronous; no relaunch of the frontmost app is required.
 
 ## Compatibility and review
 

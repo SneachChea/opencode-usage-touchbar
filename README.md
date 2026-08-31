@@ -18,8 +18,7 @@
 - 菜单栏图标、图标大小和文字字号可配置。
 - 默认跟随系统语言，并可在设置中切换简中、繁中、英文、日文、韩文和西班牙文。
 - 支持登录时自动启动，每 5 分钟自动刷新。
-- 在带 Touch Bar 的 MacBook Pro 上显示两组进度、百分比和重置时间。
-- Codex 位于前台时可自动显示 Touch Bar 用量界面。
+- 在带 Touch Bar 的 MacBook Pro 上显示两组进度、百分比和重置时间；支持跨应用常驻显示。
 - 可选显示 OpenCode Go 用量（5 小时滚动、每周、每月）于菜单栏、菜单和 Touch Bar。
 - 不依赖第三方库。
 
@@ -86,16 +85,18 @@ CODEX_USAGE_ARCHS="$(uname -m)" ./build-app.sh dist
 
 ### Touch Bar
 
-设置页中可以控制：
+设置页中可以控制 Touch Bar 模式：
 
-- 是否显示 Touch Bar Usage 信息；
-- Codex 位于前台时是否自动显示。
+- 始终显示（默认）：切换到 Terminal、Firefox、Finder、VS Code 等其他应用后配额仍然常驻显示；
+- 仅 Codex 前台时显示；
+- 不显示。
 
-普通 Touch Bar 内容使用公开的 `NSTouchBar` API。“Codex 前台时自动显示”需要调用未公开的 AppKit 系统模态 selector，并通过运行时检查后才会启用。这意味着：
+普通 Touch Bar 内容使用公开的 `NSTouchBar` API。“始终显示”需要调用未公开的 AppKit 系统模态 selector（与 MTMR、Pock、claude-usage-touchbar 同一机制），并通过运行时检查后才会启用。这意味着：
 
 - 该功能不适用于 Mac App Store 分发；
 - macOS 更新后可能失效；
 - 不支持时应用会自动退回普通 Touch Bar 模式，不影响菜单栏功能。
+- 常驻显示使用 placement 0，Apple Control Strip 保持可用；前台应用的上下文 Touch Bar 控件会被替代。Touch Bar 右侧的 x 按钮可隐藏用量信息，切换为“不显示”、点击 x 或退出应用都会立即恢复原生 Touch Bar。未检测到 Codex 或未配置 OpenCode Go 时，对应区域不显示，OpenCode Go 区域前会显示其标志。
 
 详见 [Touch Bar 实现说明](docs/TOUCH_BAR.md)。
 

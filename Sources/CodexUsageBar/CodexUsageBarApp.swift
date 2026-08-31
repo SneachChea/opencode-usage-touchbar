@@ -245,6 +245,8 @@ enum CodexUsageClient {
         )
     }
 
+    static var isInstalled: Bool { findCodexExecutable() != nil }
+
     private static func findCodexExecutable() -> URL? {
         let candidates = [
             "/Applications/ChatGPT.app/Contents/Resources/codex",
@@ -461,6 +463,22 @@ private final class LockedFlag: @unchecked Sendable {
     }
 }
 
+enum TouchBarMode: String, CaseIterable, Identifiable {
+    case always
+    case codexActive
+    case disabled
+
+    var id: String { rawValue }
+
+    var localizationKey: String {
+        switch self {
+        case .always: return "touch_bar_mode_always"
+        case .codexActive: return "touch_bar_mode_codex"
+        case .disabled: return "touch_bar_mode_disabled"
+        }
+    }
+}
+
 @MainActor
 final class UsageStore: ObservableObject {
     @Published var snapshot: UsageSnapshot?
@@ -482,12 +500,17 @@ final class UsageStore: ObservableObject {
     @Published var menuTextSize: Double {
         didSet { UserDefaults.standard.set(menuTextSize, forKey: "menuTextSize") }
     }
-    @Published var touchBarEnabled: Bool {
-        didSet { UserDefaults.standard.set(touchBarEnabled, forKey: "touchBarEnabled") }
+    @Published var touchBarMode: TouchBarMode {
+        didSet {
+            UserDefaults.standard.set(touchBarMode.rawValue, forKey: "touchBarMode")
+            touchBarHidden = false
+        }
     }
-    @Published var touchBarWhenCodexActive: Bool {
-        didSet { UserDefaults.standard.set(touchBarWhenCodexActive, forKey: "touchBarWhenCodexActive") }
-    }
+    /// Set by the x button on the Touch Bar. Not persisted: presentation
+    /// resumes when the mode changes, when the popover button is used, or
+    /// after the app restarts.
+    @Published var touchBarHidden = false
+    @Published private(set) var codexConfigured = CodexUsageClient.isInstalled
     @Published var appLanguage: AppLanguage {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
@@ -510,8 +533,19 @@ final class UsageStore: ObservableObject {
         menuIconName = defaults.string(forKey: "menuIconName") ?? "gauge.with.dots.needle.67percent"
         menuIconSize = defaults.object(forKey: "menuIconSize") as? Double ?? 12
         menuTextSize = defaults.object(forKey: "menuTextSize") as? Double ?? 12
-        touchBarEnabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
-        touchBarWhenCodexActive = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
+        if let raw = defaults.string(forKey: "touchBarMode"), let mode = TouchBarMode(rawValue: raw) {
+            touchBarMode = mode
+        } else {
+            let enabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
+            let whenCodex = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
+            touchBarMode = if !enabled {
+                .disabled
+            } else if whenCodex {
+                .codexActive
+            } else {
+                .always
+            }
+        }
         appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
         openCodeGoKeyStored = KeychainStore.loadOpenCodeGoAPIKey() != nil
         refresh()
@@ -567,12 +601,17 @@ final class UsageStore: ObservableObject {
         return formatter.string(from: date)
     }
 
+    func hideTouchBar() {
+        touchBarHidden = true
+    }
+
     func refresh() {
         refreshCodex()
         refreshOpenCodeGo()
     }
 
     private func refreshCodex() {
+        codexConfigured = CodexUsageClient.isInstalled
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
@@ -817,6 +856,14 @@ struct UsagePopover: View {
                     Label(store.tr("official_usage"), systemImage: "safari")
                 }
 
+                if store.touchBarHidden, store.touchBarMode != .disabled {
+                    Button {
+                        store.touchBarHidden = false
+                    } label: {
+                        Label(store.tr("touch_bar_show"), systemImage: "touchbar")
+                    }
+                }
+
                 Spacer()
 
                 Button {
@@ -855,78 +902,50 @@ struct UsagePopover: View {
 }
 
 enum TouchBarSystemModal {
-    static let systemTrayIdentifier = NSTouchBarItem.Identifier("com.local.codexusagebar.touchbar")
-
     private static let presentSelector = NSSelectorFromString(
         "presentSystemModalTouchBar:placement:systemTrayItemIdentifier:"
     )
     private static let dismissSelector = NSSelectorFromString("dismissSystemModalTouchBar:")
     private static let minimizeSelector = NSSelectorFromString("minimizeSystemModalTouchBar:")
-    private static let addSystemTrayItemSelector = NSSelectorFromString("addSystemTrayItem:")
-    private static let removeSystemTrayItemSelector = NSSelectorFromString("removeSystemTrayItem:")
 
-    private typealias SetControlStripPresence = @convention(c) (CFString, Bool) -> Void
+    private typealias SetShowsCloseBox = @convention(c) (Bool) -> Void
 
     nonisolated(unsafe) private static let dfrHandle: UnsafeMutableRawPointer? = dlopen(
         "/System/Library/PrivateFrameworks/DFRFoundation.framework/DFRFoundation",
         RTLD_NOW
     )
-    private static let setControlStripPresence: SetControlStripPresence? = {
+    private static let setShowsCloseBox: SetShowsCloseBox? = {
         guard let dfrHandle,
-              let pointer = dlsym(dfrHandle, "DFRElementSetControlStripPresenceForIdentifier") else {
+              let pointer = dlsym(dfrHandle, "DFRSystemModalShowsCloseBoxWhenFrontMost") else {
             return nil
         }
-        return unsafeBitCast(pointer, to: SetControlStripPresence.self)
+        return unsafeBitCast(pointer, to: SetShowsCloseBox.self)
     }()
 
     static var isAvailable: Bool {
         class_getClassMethod(NSTouchBar.self, presentSelector) != nil &&
-            class_getClassMethod(NSTouchBar.self, dismissSelector) != nil &&
-            class_getClassMethod(NSTouchBarItem.self, addSystemTrayItemSelector) != nil &&
-            class_getClassMethod(NSTouchBarItem.self, removeSystemTrayItemSelector) != nil &&
-            setControlStripPresence != nil
+            class_getClassMethod(NSTouchBar.self, dismissSelector) != nil
     }
 
-    static func addSystemTrayItem(_ item: NSTouchBarItem) -> Bool {
-        guard let method = class_getClassMethod(NSTouchBarItem.self, addSystemTrayItemSelector) else {
-            return false
-        }
-        typealias Function = @convention(c) (AnyObject, Selector, NSTouchBarItem) -> Void
-        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
-        function(NSTouchBarItem.self, addSystemTrayItemSelector, item)
-        setControlStripPresence?(systemTrayIdentifier.rawValue as CFString, true)
-        return true
-    }
-
-    static func removeSystemTrayItem(_ item: NSTouchBarItem) {
-        setControlStripPresence?(systemTrayIdentifier.rawValue as CFString, false)
-        guard let method = class_getClassMethod(NSTouchBarItem.self, removeSystemTrayItemSelector) else {
-            return
-        }
-        typealias Function = @convention(c) (AnyObject, Selector, NSTouchBarItem) -> Void
-        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
-        function(NSTouchBarItem.self, removeSystemTrayItemSelector, item)
-    }
-
+    /// Presents the bar as the system-modal Touch Bar. Placement 0 shares the bar
+    /// with the Control Strip; placement 1 would cover it (not used).
+    /// Calling this again while presented is cheap and idempotent - macOS reclaims
+    /// the modal bar when apps switch, so it must be re-asserted on every activation.
+    @discardableResult
     static func present(_ touchBar: NSTouchBar) -> Bool {
         guard let method = class_getClassMethod(NSTouchBar.self, presentSelector) else {
             return false
         }
+        setShowsCloseBox?(false)
         typealias Function = @convention(c) (
             AnyObject,
             Selector,
             NSTouchBar,
             Int,
-            NSString
+            NSString?
         ) -> Void
         let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
-        function(
-            NSTouchBar.self,
-            presentSelector,
-            touchBar,
-            1,
-            systemTrayIdentifier.rawValue as NSString
-        )
+        function(NSTouchBar.self, presentSelector, touchBar, 0, nil)
         return true
     }
 
@@ -957,6 +976,9 @@ private extension NSTouchBarItem.Identifier {
     static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-weekly")
     static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-monthly")
     static let goResetTimes = NSTouchBarItem.Identifier("com.local.codexusagebar.go-reset-times")
+    static let openCodeLogo = NSTouchBarItem.Identifier("com.local.codexusagebar.opencode-logo")
+    static let hideUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.hide")
+    static let noUsageSource = NSTouchBarItem.Identifier("com.local.codexusagebar.no-source")
 }
 
 final class TouchBarProgressView: NSView {
@@ -995,7 +1017,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private var weeklyProgress: TouchBarProgressView?
     private var resetLabel: NSTextField?
     private var refreshButton: NSButton?
-    private var systemTrayItem: NSCustomTouchBarItem?
     private var goRollingLabel: NSTextField?
     private var goRollingProgress: TouchBarProgressView?
     private var goWeeklyLabel: NSTextField?
@@ -1041,9 +1062,19 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             .sink { [weak self] _ in self?.updateItems() }
             .store(in: &subscriptions)
 
-        Publishers.CombineLatest(store.$touchBarEnabled, store.$touchBarWhenCodexActive)
+        store.$touchBarMode
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _ in self?.applyPresentationMode() }
+            .sink { [weak self] _ in self?.applyPresentationMode(reassert: true) }
+            .store(in: &subscriptions)
+
+        store.$touchBarHidden
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyPresentationMode(reassert: true) }
+            .store(in: &subscriptions)
+
+        store.$codexConfigured
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateItems() }
             .store(in: &subscriptions)
 
         NSWorkspace.shared.notificationCenter.publisher(
@@ -1059,6 +1090,15 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         .store(in: &subscriptions)
 
         codexIsFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.openai.codex"
+        DistributedNotificationCenter.default().publisher(
+            for: NSNotification.Name("com.apple.screenIsUnlocked")
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            guard let self, self.systemModalVisible else { return }
+            TouchBarSystemModal.present(self.touchBar)
+        }
+        .store(in: &subscriptions)
         updateItems()
         applyPresentationMode()
     }
@@ -1066,9 +1106,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     deinit {
         if systemModalVisible {
             TouchBarSystemModal.dismiss(touchBar)
-        }
-        if let systemTrayItem {
-            TouchBarSystemModal.removeSystemTrayItem(systemTrayItem)
         }
     }
 
@@ -1145,6 +1182,33 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             item.customizationLabel = store.tr("go_reset_customization")
             goResetLabel = label
             updateItems()
+            return item
+        case .noUsageSource:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let label = NSTextField(labelWithString: store.tr("no_usage_source"))
+            label.font = .systemFont(ofSize: 12, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            item.view = label
+            item.customizationLabel = store.tr("no_usage_source")
+            return item
+        case .openCodeLogo:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let view = NSImageView()
+            view.image = OpenCodeLogo.image
+            view.imageScaling = .scaleProportionallyUpOrDown
+            view.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            item.view = view
+            item.customizationLabel = "OpenCode"
+            return item
+        case .hideUsage:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let button = NSButton(
+                image: NSImage(systemSymbolName: "xmark", accessibilityDescription: store.tr("hide_usage"))!,
+                target: self,
+                action: #selector(hideUsage)
+            )
+            item.view = button
+            item.customizationLabel = store.tr("hide_usage")
             return item
         default:
             return nil
@@ -1233,6 +1297,8 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private func updateDefaultItemIdentifiers() {
         let goIdentifiers: [NSTouchBarItem.Identifier] = store.openCodeGoConfigured
             ? [
+                .openCodeLogo,
+                .fixedSpaceSmall,
                 .goRollingUsage,
                 .fixedSpaceSmall,
                 .goWeeklyUsage,
@@ -1242,13 +1308,24 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 .goResetTimes
             ]
             : []
-        let identifiers: [NSTouchBarItem.Identifier] = [
-            .fiveHourUsage,
-            .fixedSpaceSmall,
-            .weeklyUsage,
-            .fixedSpaceSmall,
-            .resetTimes
-        ] + goIdentifiers + [.flexibleSpace, .refreshUsage]
+        let codexIdentifiers: [NSTouchBarItem.Identifier] = store.codexConfigured
+            ? [
+                .fiveHourUsage,
+                .fixedSpaceSmall,
+                .weeklyUsage,
+                .fixedSpaceSmall,
+                .resetTimes
+            ]
+            : []
+        var identifiers = codexIdentifiers + goIdentifiers
+        if identifiers.isEmpty {
+            identifiers = [
+                .openCodeLogo,
+                .fixedSpaceSmall,
+                .noUsageSource
+            ]
+        }
+        identifiers += [.flexibleSpace, .refreshUsage, .fixedSpaceSmall, .hideUsage]
         guard touchBar.defaultItemIdentifiers != identifiers else { return }
         touchBar.defaultItemIdentifiers = identifiers
     }
@@ -1286,33 +1363,36 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     }
 
     private func applyPresentationMode(reassert: Bool = false) {
-        NSApp.touchBar = store.touchBarEnabled ? touchBar : nil
-        let canUseSystemModal = store.touchBarEnabled &&
-            store.touchBarWhenCodexActive &&
+        let mode = store.touchBarMode
+        // Public-API path: still shows the bar while this app itself is active,
+        // and is the only path when the system-modal SPI is unavailable.
+        NSApp.touchBar = mode == .disabled ? nil : touchBar
+        let shouldShow = mode != .disabled &&
+            !store.touchBarHidden &&
+            (mode == .always || codexIsFrontmost) &&
             TouchBarSystemModal.isAvailable
 
-        if canUseSystemModal {
-            installSystemTrayItem()
-        } else {
-            if systemModalVisible {
-                TouchBarSystemModal.dismiss(touchBar)
-                systemModalVisible = false
+        if shouldShow {
+            if !systemModalVisible {
+                systemModalVisible = TouchBarSystemModal.present(touchBar)
+            } else if reassert {
+                // macOS can reclaim the modal bar during activation changes;
+                // re-presenting is cheap and idempotent.
+                TouchBarSystemModal.present(touchBar)
             }
-            removeSystemTrayItem()
-        }
-
-        let shouldShowSystemModal = canUseSystemModal && codexIsFrontmost
-
-        if reassert && shouldShowSystemModal && systemModalVisible {
-            TouchBarSystemModal.dismiss(touchBar)
+        } else if systemModalVisible {
+            if mode == .disabled || store.touchBarHidden {
+                TouchBarSystemModal.dismiss(touchBar)
+            } else {
+                TouchBarSystemModal.minimize(touchBar)
+            }
             systemModalVisible = false
         }
-        if shouldShowSystemModal && !systemModalVisible {
-            systemModalVisible = TouchBarSystemModal.present(touchBar)
-        } else if !shouldShowSystemModal && systemModalVisible {
-            TouchBarSystemModal.minimize(touchBar)
-            systemModalVisible = false
-        }
+    }
+
+    func refreshPresentation() {
+        codexIsFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.openai.codex"
+        applyPresentationMode(reassert: true)
     }
 
     func shutDown() {
@@ -1320,42 +1400,11 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             TouchBarSystemModal.dismiss(touchBar)
             systemModalVisible = false
         }
-        removeSystemTrayItem()
         NSApp.touchBar = nil
     }
 
-    private func installSystemTrayItem() {
-        guard systemTrayItem == nil else { return }
-        let item = NSCustomTouchBarItem(identifier: TouchBarSystemModal.systemTrayIdentifier)
-        let button = NSButton(
-            image: NSImage(
-                systemSymbolName: "gauge.with.dots.needle.67percent",
-                accessibilityDescription: store.tr("settings")
-            ) ?? NSImage(),
-            target: self,
-            action: #selector(presentFromSystemTray)
-        )
-        button.bezelStyle = .texturedRounded
-        button.setAccessibilityLabel(store.tr("settings"))
-        item.view = button
-        guard TouchBarSystemModal.addSystemTrayItem(item) else { return }
-        systemTrayItem = item
-    }
-
-    private func removeSystemTrayItem() {
-        guard let systemTrayItem else { return }
-        TouchBarSystemModal.removeSystemTrayItem(systemTrayItem)
-        self.systemTrayItem = nil
-    }
-
-    @objc private func presentFromSystemTray() {
-        guard store.touchBarEnabled, TouchBarSystemModal.isAvailable else { return }
-        if systemModalVisible {
-            TouchBarSystemModal.minimize(touchBar)
-            systemModalVisible = false
-        } else {
-            systemModalVisible = TouchBarSystemModal.present(touchBar)
-        }
+    @objc private func hideUsage() {
+        store.hideTouchBar()
     }
 
     @objc private func refreshUsage() {
@@ -1430,9 +1479,11 @@ struct SettingsView: View {
             }
 
             Section("Touch Bar") {
-                Toggle(store.tr("show_touch_bar"), isOn: $store.touchBarEnabled)
-                Toggle(store.tr("auto_touch_bar"), isOn: $store.touchBarWhenCodexActive)
-                    .disabled(!store.touchBarEnabled || !TouchBarSystemModal.isAvailable)
+                Picker(store.tr("touch_bar_mode"), selection: $store.touchBarMode) {
+                    ForEach(TouchBarMode.allCases) { mode in
+                        Text(store.tr(mode.localizationKey)).tag(mode)
+                    }
+                }
 
                 Text(TouchBarSystemModal.isAvailable
                      ? store.tr("touch_bar_description")
@@ -1499,7 +1550,7 @@ struct SettingsView: View {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let store = UsageStore()
 
     private var statusItem: NSStatusItem?
@@ -1510,6 +1561,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var touchBarController: UsageTouchBarController?
     private var showSettingsAfterMenuCloses = false
     private var subscriptions = Set<AnyCancellable>()
+    // App Nap would freeze refreshes and Touch Bar re-presentation while the
+    // app is in the background, which is exactly when they are needed.
+    private let touchBarActivity = ProcessInfo.processInfo.beginActivity(
+        options: [.userInitiatedAllowingIdleSystemSleep],
+        reason: "Keep usage refreshes and the persistent Touch Bar alive"
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1661,6 +1718,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.async { [weak self] in self?.presentSettingsWindow() }
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.touchBarController?.refreshPresentation()
+        }
+    }
+
     private func presentSettingsWindow() {
         if settingsWindow == nil {
             let window = NSWindow(
@@ -1671,6 +1735,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             window.title = store.tr("settings_window_title")
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.center()
             window.contentView = NSHostingView(rootView: SettingsView(store: store))
             settingsWindow = window
@@ -1723,4 +1788,20 @@ struct CodexUsageBarApp: App {
             EmptyView()
         }
     }
+}
+
+enum OpenCodeLogo {
+    /// OpenCode mark with transparent background (source: seeklogo.com, 66/665474).
+    /// Rendered as a template image so AppKit tints the glyph for the dark
+    /// Touch Bar context without shipping a colour variant.
+    static var image: NSImage? {
+        guard let data = Data(base64Encoded: pngBase64), let image = NSImage(data: data) else {
+            return nil
+        }
+        image.isTemplate = true
+        image.size = NSSize(width: 22, height: 27)
+        return image
+    }
+
+    private static let pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAALAAAADYCAYAAABLEGlpAAAC3ElEQVR42u3SwQmCcBjGYScJWkLoIEU3qTkawtrCkzZJ2gzaDtaxGarjX28pgdDzwu8b4OOJTllWhC0Xi5c014ZeI4AFsASwNALw8XPCPElzbugVYAEsASwBLIA9SQBLAEsAC2AJYAlgAQywAJYAlgAWwAALYAlgCWABLAEsASwBLIAlgCWABTDAAlgCWAJYAAMsgCWAJYAFsATwL9puNs+wXZo+NL7hPwEGGGCAAQYYYAE8v9qm2YdFNmm3tt2HAQwwwAADDDDABjDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAAAwwwwAADDDDABjDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAGMMAAAwwwwAADDDDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAGMMAAAwwwwAADDDDABjDAAAMMMMD/B7i6XPKwe9cdNL66qvIwgAEGGGCAAQZYAM+vsih6XetaEzqXZS+AAQYYYIABBlgAAwwwwAADDDDAAAMsgAEGGGCAAQYYYIABBhhggAEGGGCAARbAAAMMMMAAAwwwwAALYIABBhhggAEGGGCABTDAAAMMMMAAAwwwwAADDDDAAAMMMMACGGCAAQYYYIABBhhgAQwwwAADDDDAAAMMsAAGGGCAAQYYYAgBBhhggAEGGGCAAQZYAAMMMMAAAwwwwAADLIABBhhggAEGGGCAARbAAAMMMMAAAyyAAQYYYIABBhhggAEWwAADDDDAAAMMMMAAC2CAAQYYYIABBhhggAUwwAADDDDAAAtggAEGGGCAAQYYYIAFMMAAAwwwwAADDDDAAhhggAEGGGCAAQYYYAEMMMAAf9Mqjnutk0QTGv4TYIABBhhggAEWwBLAEsASwAJYAlgCWAADLIAlgCWABTDAAlgCWAJYAEsASwBLAAtgCWAJYAEMsACWAJYAFsCeJIAlgCWABbAEsASwAAZYAEsASwALYIAFsASw9CXgN3zVXSulPvT5AAAAAElFTkSuQmCC"
 }
