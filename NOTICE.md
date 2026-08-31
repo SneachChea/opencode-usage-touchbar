@@ -1,6 +1,6 @@
 # Unofficial project notice
 
-Codex Usage Bar is an independent, unofficial open-source utility. It is not
+OpenCode Usage TouchBar is an independent, unofficial open-source utility. It is not
 affiliated with, endorsed by, or sponsored by OpenAI.
 
 OpenAI, ChatGPT, and Codex are trademarks of OpenAI. Their use in this project

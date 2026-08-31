@@ -13,10 +13,10 @@ Contributions are welcome.
 1. Fork the repository and create a focused branch.
 2. Run `swift build` before submitting a pull request.
 3. Run `./build-app.sh dist` to verify the application bundle.
-4. Run `dist/Codex\ Usage\ Bar.app/Contents/MacOS/CodexUsageBar --self-test`
+4. Run `dist/OpenCode\ Usage\ TouchBar.app/Contents/MacOS/opencode-usage-touchbar --self-test`
    while Codex is signed in.
 5. For OpenCode Go changes, run
-   `dist/Codex\ Usage\ Bar.app/Contents/MacOS/CodexUsageBar --self-test-opencode-go`
+   `dist/OpenCode\ Usage\ TouchBar.app/Contents/MacOS/opencode-usage-touchbar --self-test-opencode-go`
    with `OPENCODE_GO_API_KEY` exported, and run `swift test` (requires Xcode).
 6. Describe user-visible changes and compatibility implications in the pull
    request.

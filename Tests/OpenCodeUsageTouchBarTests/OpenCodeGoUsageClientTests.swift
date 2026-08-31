@@ -1,5 +1,5 @@
 import XCTest
-@testable import CodexUsageBar
+@testable import OpenCodeUsageTouchBar
 
 final class OpenCodeGoUsageClientTests: XCTestCase {
     func testParsesValidResponse() throws {

@@ -1,6 +1,6 @@
 # Privacy
 
-Codex Usage Bar is local-first and contains no telemetry, advertising, crash
+OpenCode Usage TouchBar is local-first and contains no telemetry, advertising, crash
 reporting SDK, or third-party analytics.
 
 ## Data the app reads
@@ -14,7 +14,7 @@ the read-only `account/rateLimits/read` request. The response may include:
 - credit balance and available reset count.
 
 This data is held in application memory for display. It is not written to a
-database or transmitted by Codex Usage Bar.
+database or transmitted by OpenCode Usage TouchBar.
 
 When OpenCode Go is configured, the app additionally reads remaining usage for
 the rolling (5-hour), weekly, and monthly windows, plus their reset
@@ -33,7 +33,7 @@ Launch-at-login state is managed by Apple's `SMAppService`.
 
 ## Network behavior
 
-Codex Usage Bar does not make its own network requests for Codex data. The
+OpenCode Usage TouchBar does not make its own network requests for Codex data. The
 local Codex process may communicate with OpenAI as part of its normal
 signed-in operation. Clicking “Official Usage” asks macOS to open
 `https://chatgpt.com/codex/settings/usage` in the default browser.
@@ -62,5 +62,5 @@ Quit the app, disable launch at login, remove the application, and delete its
 preferences if desired:
 
 ```bash
-defaults delete com.local.codexusagebar
+defaults delete com.local.opencodeusagetouchbar
 ```

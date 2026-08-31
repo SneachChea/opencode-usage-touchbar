@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")" && pwd)"
 output_dir="${1:-$project_dir/dist}"
-app_dir="$output_dir/Codex Usage Bar.app"
+app_dir="$output_dir/OpenCode Usage TouchBar.app"
 sign_identity="${CODE_SIGN_IDENTITY:--}"
 
 IFS=' ' read -r -a build_archs <<< "${CODEX_USAGE_ARCHS:-arm64 x86_64}"
@@ -19,12 +19,12 @@ for architecture in "${build_archs[@]}"; do
   scratch_path="$project_dir/.build/$architecture"
   swift build -c release --arch "$architecture" --scratch-path "$scratch_path"
   binary_dir="$(swift build -c release --arch "$architecture" --scratch-path "$scratch_path" --show-bin-path)"
-  binaries+=("$binary_dir/CodexUsageBar")
+  binaries+=("$binary_dir/opencode-usage-touchbar")
 done
 
 universal_dir="$project_dir/.build/universal"
 mkdir -p "$universal_dir"
-universal_binary="$universal_dir/CodexUsageBar"
+universal_binary="$universal_dir/opencode-usage-touchbar"
 if [[ "${#binaries[@]}" -eq 1 ]]; then
   cp "${binaries[0]}" "$universal_binary"
 else
@@ -43,10 +43,10 @@ if [[ -e "$app_dir" ]]; then
   rm -rf "$app_dir"
 fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-cp "$universal_binary" "$app_dir/Contents/MacOS/CodexUsageBar"
+cp "$universal_binary" "$app_dir/Contents/MacOS/opencode-usage-touchbar"
 cp "Info.plist" "$app_dir/Contents/Info.plist"
 cp "$asset_output/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
-chmod +x "$app_dir/Contents/MacOS/CodexUsageBar"
+chmod +x "$app_dir/Contents/MacOS/opencode-usage-touchbar"
 
 codesign_args=(--force --deep --sign "$sign_identity")
 if [[ "$sign_identity" != "-" ]]; then

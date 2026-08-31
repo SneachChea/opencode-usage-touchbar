@@ -16,8 +16,8 @@ fi
 mkdir -p "$dist_dir"
 "$project_dir/build-app.sh" "$dist_dir"
 
-app_path="$dist_dir/Codex Usage Bar.app"
-archive_path="$dist_dir/Codex-Usage-Bar-v$version.zip"
+app_path="$dist_dir/OpenCode Usage TouchBar.app"
+archive_path="$dist_dir/opencode-usage-touchbar-v$version.zip"
 checksum_path="$archive_path.sha256"
 
 plutil -lint "$app_path/Contents/Info.plist"
@@ -34,6 +34,6 @@ ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive_path"
   shasum -a 256 -c "$(basename "$checksum_path")"
 )
 
-echo "Created Codex Usage Bar $version (build $build)"
+echo "Created OpenCode Usage TouchBar $version (build $build)"
 echo "$archive_path"
 echo "$checksum_path"

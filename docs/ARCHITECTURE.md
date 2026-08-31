@@ -1,12 +1,12 @@
 # Architecture
 
-Codex Usage Bar is a single-target Swift Package using AppKit, SwiftUI,
+OpenCode Usage TouchBar is a single-target Swift Package using AppKit, SwiftUI,
 Combine, and ServiceManagement. It has no third-party dependencies.
 
 ## Data flow
 
 ```text
-Codex Usage Bar
+OpenCode Usage TouchBar
     │
     ├─ launches local `codex app-server --stdio`
     │

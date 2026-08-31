@@ -124,8 +124,8 @@ enum CodexUsageClient {
             "method": "initialize",
             "params": [
                 "clientInfo": [
-                    "name": "codex-usage-bar",
-                    "title": "Codex Usage Bar",
+                    "name": "opencode-usage-touchbar",
+                    "title": "OpenCode Usage TouchBar",
                     "version": "1.0.0"
                 ],
                 "capabilities": ["experimentalApi": true]
@@ -392,7 +392,7 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
 }
 
 private enum KeychainStore {
-    private static let service = "com.local.codexusagebar"
+    private static let service = "com.local.opencodeusagetouchbar"
     private static let account = "opencode-go-api-key"
 
     static func loadOpenCodeGoAPIKey() -> String? {
@@ -968,17 +968,17 @@ enum TouchBarSystemModal {
 }
 
 private extension NSTouchBarItem.Identifier {
-    static let fiveHourUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.five-hour")
-    static let weeklyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.weekly")
-    static let resetTimes = NSTouchBarItem.Identifier("com.local.codexusagebar.reset-times")
-    static let refreshUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.refresh")
-    static let goRollingUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-rolling")
-    static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-weekly")
-    static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.go-monthly")
-    static let goResetTimes = NSTouchBarItem.Identifier("com.local.codexusagebar.go-reset-times")
-    static let openCodeLogo = NSTouchBarItem.Identifier("com.local.codexusagebar.opencode-logo")
-    static let hideUsage = NSTouchBarItem.Identifier("com.local.codexusagebar.hide")
-    static let noUsageSource = NSTouchBarItem.Identifier("com.local.codexusagebar.no-source")
+    static let fiveHourUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.five-hour")
+    static let weeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.weekly")
+    static let resetTimes = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.reset-times")
+    static let refreshUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.refresh")
+    static let goRollingUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-rolling")
+    static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-weekly")
+    static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-monthly")
+    static let goResetTimes = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-reset-times")
+    static let openCodeLogo = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.opencode-logo")
+    static let hideUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.hide")
+    static let noUsageSource = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.no-source")
 }
 
 final class TouchBarProgressView: NSView {
@@ -1034,7 +1034,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
 
         touchBar.delegate = self
         touchBar.customizationIdentifier = NSTouchBar.CustomizationIdentifier(
-            "com.local.codexusagebar.usage"
+            "com.local.opencodeusagetouchbar.usage"
         )
         updateDefaultItemIdentifiers()
 
@@ -1097,6 +1097,21 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         .sink { [weak self] _ in
             guard let self, self.systemModalVisible else { return }
             TouchBarSystemModal.present(self.touchBar)
+        }
+        .store(in: &subscriptions)
+
+        // Sleep can drop the modal bar without any screen-lock cycle, and DFR may
+        // still be coming back when the wake notification lands, so assert once
+        // immediately and once more shortly after.
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didWakeNotification
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            self?.refreshPresentation()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.refreshPresentation()
+            }
         }
         .store(in: &subscriptions)
         updateItems()
@@ -1748,7 +1763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 }
 
 @main
-struct CodexUsageBarApp: App {
+struct OpenCodeUsageTouchBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {

@@ -16,6 +16,6 @@ GitHub's private vulnerability reporting feature for the repository. Include:
 
 ## Security model
 
-Codex Usage Bar launches the locally installed `codex app-server --stdio`
+OpenCode Usage TouchBar launches the locally installed `codex app-server --stdio`
 process and sends a read-only rate-limit request. It does not request, copy, or
 store account tokens. See [docs/PRIVACY.md](docs/PRIVACY.md) for details.

@@ -57,9 +57,11 @@ Details:
   box that would otherwise appear while this accessory app is frontmost.
 - macOS can reclaim a system-modal bar during app-activation changes, so the
   bar is re-presented (cheap and idempotent) on every
-  `NSWorkspaceDidActivateApplicationNotification` and after the screen
-  unlocks (`com.apple.screenIsUnlocked`). This is what makes the quotas
-  survive Terminal → Firefox → Finder → VS Code switches.
+  `NSWorkspaceDidActivateApplicationNotification`, after the screen unlocks
+  (`com.apple.screenIsUnlocked`), and after `NSWorkspaceDidWakeNotification`
+  (twice: the wake notification can arrive before DFR is ready to accept a
+  presentation). This is what makes the quotas survive Terminal → Firefox →
+  Finder → VS Code switches and sleep/wake cycles.
 - App Nap is suppressed with
   `ProcessInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep])`
   so refreshes and re-presentation keep working while the app is in the
@@ -85,6 +87,10 @@ The native Touch Bar is restored immediately when:
   `dismissSystemModalTouchBar:`).
 
 Dismissing is synchronous; no relaunch of the frontmost app is required.
+
+A crash or `kill -9` runs none of this, so the modal bar can stay claimed with a
+frozen usage display until macOS or another presenter takes the bar back. Only
+a normal quit (`applicationWillTerminate`) restores the native bar reliably.
 
 ## Compatibility and review
 

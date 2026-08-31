@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
 - Persistent Touch Bar: new `Always visible` mode keeps the quotas on the
   Touch Bar across app switches (Terminal, Firefox, Finder, VS Code, Safari),
   sharing the bar with the Control Strip (placement 0), re-asserted on every
-  app activation and screen unlock.
+  app activation, screen unlock, and system wake.
 - `x` button at the right end of the Touch Bar hides the usage info and
   restores the native Touch Bar (re-show from the popover, or change mode).
 - OpenCode logo marks the OpenCode Go section on the Touch Bar.

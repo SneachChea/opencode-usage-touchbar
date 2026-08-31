@@ -29,18 +29,18 @@ jobs:
 
       - name: Inspect application binary
         run: |
-          file "dist/Codex Usage Bar.app/Contents/MacOS/CodexUsageBar"
-          lipo -archs "dist/Codex Usage Bar.app/Contents/MacOS/CodexUsageBar"
+          file "dist/OpenCode Usage TouchBar.app/Contents/MacOS/opencode-usage-touchbar"
+          lipo -archs "dist/OpenCode Usage TouchBar.app/Contents/MacOS/opencode-usage-touchbar"
           cd dist
-          shasum -a 256 -c Codex-Usage-Bar-v*.zip.sha256
+          shasum -a 256 -c opencode-usage-touchbar-v*.zip.sha256
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Codex-Usage-Bar
+          name: opencode-usage-touchbar
           path: |
-            dist/Codex-Usage-Bar-v*.zip
-            dist/Codex-Usage-Bar-v*.zip.sha256
+            dist/opencode-usage-touchbar-v*.zip
+            dist/opencode-usage-touchbar-v*.zip.sha256
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -51,7 +51,7 @@ jobs:
           info_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
           test "$version" = "$info_version"
           gh release create "$GITHUB_REF_NAME" \
-            dist/Codex-Usage-Bar-v*.zip \
-            dist/Codex-Usage-Bar-v*.zip.sha256 \
+            dist/opencode-usage-touchbar-v*.zip \
+            dist/opencode-usage-touchbar-v*.zip.sha256 \
             --generate-notes \
-            --title "Codex Usage Bar $GITHUB_REF_NAME"
+            --title "OpenCode Usage TouchBar $GITHUB_REF_NAME"
