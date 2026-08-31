@@ -31,20 +31,22 @@ enum UsageClientError: LocalizedError {
     case invalidResponse
     case server(String)
 
-    var errorDescription: String? {
+    func message(language: AppLanguage) -> String {
         switch self {
         case .codexNotFound:
-            return "找不到 Codex CLI。请先安装或更新 ChatGPT/Codex。"
+            return L10n.string("error_codex_not_found", language: language)
         case .launchFailed(let message):
-            return "无法启动 Codex：\(message)"
+            return L10n.format("error_launch_failed", language: language, message)
         case .timedOut:
-            return "读取超时，请稍后重试。"
+            return L10n.string("error_timeout", language: language)
         case .invalidResponse:
-            return "Codex 返回了无法识别的 Usage 数据。"
+            return L10n.string("error_invalid_response", language: language)
         case .server(let message):
-            return "Codex 返回错误：\(message)"
+            return L10n.format("error_server", language: language, message)
         }
     }
+
+    var errorDescription: String? { message(language: .system) }
 }
 
 enum CodexUsageClient {
@@ -162,7 +164,7 @@ enum CodexUsageClient {
             }
 
             if let error = json["error"] as? [String: Any] {
-                throw UsageClientError.server(error["message"] as? String ?? "未知错误")
+                throw UsageClientError.server(error["message"] as? String ?? "Unknown error")
             }
 
             guard let result = json["result"] as? [String: Any],
@@ -261,8 +263,17 @@ final class UsageStore: ObservableObject {
     @Published var touchBarWhenCodexActive: Bool {
         didSet { UserDefaults.standard.set(touchBarWhenCodexActive, forKey: "touchBarWhenCodexActive") }
     }
+    @Published var appLanguage: AppLanguage {
+        didSet {
+            UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
+            if let lastUsageError {
+                errorMessage = lastUsageError.message(language: appLanguage)
+            }
+        }
+    }
 
     private var refreshTask: Task<Void, Never>?
+    private var lastUsageError: UsageClientError?
 
     init() {
         let defaults = UserDefaults.standard
@@ -271,6 +282,7 @@ final class UsageStore: ObservableObject {
         menuTextSize = defaults.object(forKey: "menuTextSize") as? Double ?? 12
         touchBarEnabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
         touchBarWhenCodexActive = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
+        appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
         refresh()
         refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -294,10 +306,26 @@ final class UsageStore: ObservableObject {
         return isLoading ? "…" : "!"
     }
 
+    func tr(_ key: String) -> String {
+        L10n.string(key, language: appLanguage)
+    }
+
+    func tr(_ key: String, _ arguments: CVarArg...) -> String {
+        String(format: tr(key), locale: appLanguage.locale, arguments: arguments)
+    }
+
+    func formatDate(_ date: Date, includeDate: Bool = true) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = appLanguage.locale
+        formatter.setLocalizedDateFormatFromTemplate(includeDate ? "MdHm" : "Hm")
+        return formatter.string(from: date)
+    }
+
     func refresh() {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
+        lastUsageError = nil
 
         Task {
             do {
@@ -305,6 +333,9 @@ final class UsageStore: ObservableObject {
                     try CodexUsageClient.fetch()
                 }.value
                 snapshot = value
+            } catch let error as UsageClientError {
+                lastUsageError = error
+                errorMessage = error.message(language: appLanguage)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -325,14 +356,15 @@ final class UsageStore: ObservableObject {
             }
             launchAtLogin = enabled
         } catch {
-            errorMessage = "无法更新开机启动设置：\(error.localizedDescription)"
+            errorMessage = tr("error_launch_at_login", error.localizedDescription)
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 }
 
 struct UsageWindowRow: View {
-    let title: String
+    @ObservedObject var store: UsageStore
+    let titleKey: String
     let window: RateWindow?
 
     private var color: Color {
@@ -345,10 +377,10 @@ struct UsageWindowRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text(title)
+                Text(store.tr(titleKey))
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Text(window.map { "\($0.remainingPercent)% 剩余" } ?? "不可用")
+                Text(window.map { store.tr("remaining", $0.remainingPercent) } ?? store.tr("unavailable"))
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(color)
             }
@@ -357,19 +389,13 @@ struct UsageWindowRow: View {
                 .tint(color)
 
             if let reset = window?.resetsAt {
-                Text("重置：\(Self.dateFormatter.string(from: reset))")
+                Text(store.tr("reset_at", store.formatDate(reset)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日 HH:mm"
-        return formatter
-    }()
 }
 
 struct UsagePopover: View {
@@ -382,7 +408,7 @@ struct UsagePopover: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Codex Usage")
                         .font(.headline)
-                    Text(store.snapshot?.plan?.uppercased() ?? "正在读取账户…")
+                    Text(store.snapshot?.plan?.uppercased() ?? store.tr("loading_account"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -394,21 +420,21 @@ struct UsagePopover: View {
             }
 
             if let snapshot = store.snapshot {
-                UsageWindowRow(title: "5 小时额度", window: snapshot.primary)
-                UsageWindowRow(title: "每周额度", window: snapshot.secondary)
+                UsageWindowRow(store: store, titleKey: "five_hour_quota", window: snapshot.primary)
+                UsageWindowRow(store: store, titleKey: "weekly_quota", window: snapshot.secondary)
 
                 Divider()
 
                 HStack(spacing: 18) {
                     Label(creditLabel(snapshot), systemImage: "creditcard")
                     if snapshot.resetCredits > 0 {
-                        Label("\(snapshot.resetCredits) 次重置", systemImage: "arrow.counterclockwise.circle")
+                        Label(store.tr("reset_count", snapshot.resetCredits), systemImage: "arrow.counterclockwise.circle")
                     }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                Text("更新于 \(snapshot.fetchedAt.formatted(date: .omitted, time: .shortened))")
+                Text(store.tr("updated_at", store.formatDate(snapshot.fetchedAt, includeDate: false)))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             } else if let message = store.errorMessage {
@@ -431,14 +457,14 @@ struct UsagePopover: View {
                 Button {
                     store.refresh()
                 } label: {
-                    Label("刷新", systemImage: "arrow.clockwise")
+                    Label(store.tr("refresh"), systemImage: "arrow.clockwise")
                 }
                 .disabled(store.isLoading)
 
                 Button {
                     store.openDashboard()
                 } label: {
-                    Label("官方 Usage", systemImage: "safari")
+                    Label(store.tr("official_usage"), systemImage: "safari")
                 }
 
                 Spacer()
@@ -448,7 +474,7 @@ struct UsagePopover: View {
                 } label: {
                     Image(systemName: "gearshape")
                 }
-                .help("设置")
+                .help(store.tr("settings"))
                 .fixedSize()
 
                 Button {
@@ -456,7 +482,7 @@ struct UsagePopover: View {
                 } label: {
                     Image(systemName: "power")
                 }
-                .help("退出")
+                .help(store.tr("quit"))
                 .fixedSize()
             }
             .buttonStyle(.bordered)
@@ -469,13 +495,14 @@ struct UsagePopover: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .environment(\.locale, store.appLanguage.locale)
         .frame(width: 330)
     }
 
     private func creditLabel(_ snapshot: UsageSnapshot) -> String {
-        if snapshot.unlimitedCredits { return "积分无限" }
-        if let balance = snapshot.creditBalance { return "积分 \(balance)" }
-        return "无积分信息"
+        if snapshot.unlimitedCredits { return store.tr("credits_unlimited") }
+        if let balance = snapshot.creditBalance { return store.tr("credits_balance", balance) }
+        return store.tr("credits_unavailable")
     }
 
     private var versionLabel: String {
@@ -596,6 +623,11 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             .sink { [weak self] _, _, _ in self?.updateItems() }
             .store(in: &subscriptions)
 
+        store.$appLanguage
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateItems() }
+            .store(in: &subscriptions)
+
         Publishers.CombineLatest(store.$touchBarEnabled, store.$touchBarWhenCodexActive)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.applyPresentationMode() }
@@ -630,40 +662,40 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     ) -> NSTouchBarItem? {
         switch identifier {
         case .fiveHourUsage:
-            let result = makeUsageItem(identifier: identifier, title: "5 小时")
+            let result = makeUsageItem(identifier: identifier, title: store.tr("five_hour_short"))
             fiveHourLabel = result.label
             fiveHourProgress = result.progress
             updateItems()
             return result.item
         case .weeklyUsage:
-            let result = makeUsageItem(identifier: identifier, title: "每周")
+            let result = makeUsageItem(identifier: identifier, title: store.tr("weekly_short"))
             weeklyLabel = result.label
             weeklyProgress = result.progress
             updateItems()
             return result.item
         case .resetTimes:
             let item = NSCustomTouchBarItem(identifier: identifier)
-            let label = NSTextField(labelWithString: "正在读取重置时间…")
+            let label = NSTextField(labelWithString: store.tr("loading_reset"))
             label.font = .systemFont(ofSize: 11, weight: .regular)
             label.textColor = .secondaryLabelColor
             label.alignment = .center
             label.lineBreakMode = .byTruncatingMiddle
             label.widthAnchor.constraint(equalToConstant: 245).isActive = true
             item.view = label
-            item.customizationLabel = "Codex 重置时间"
+            item.customizationLabel = store.tr("reset_customization")
             resetLabel = label
             updateItems()
             return item
         case .refreshUsage:
             let item = NSCustomTouchBarItem(identifier: identifier)
             let button = NSButton(
-                image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新 Usage")!,
+                image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: store.tr("refresh_usage"))!,
                 target: self,
                 action: #selector(refreshUsage)
             )
             button.bezelColor = .controlAccentColor
             item.view = button
-            item.customizationLabel = "刷新 Codex Usage"
+            item.customizationLabel = store.tr("refresh_codex_usage")
             refreshButton = button
             updateItems()
             return item
@@ -693,7 +725,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         stack.widthAnchor.constraint(equalToConstant: 155).isActive = true
 
         item.view = stack
-        item.customizationLabel = "Codex \(title)额度"
+        item.customizationLabel = store.tr("quota_customization", title)
         return (item, label, progress)
     }
 
@@ -706,7 +738,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         )
         updateUsage(
             window: store.snapshot?.secondary,
-            prefix: "周",
+            prefix: store.tr("weekly_prefix"),
             label: weeklyLabel,
             progress: weeklyProgress
         )
@@ -714,9 +746,9 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         if let snapshot = store.snapshot {
             let primaryReset = resetText(snapshot.primary?.resetsAt, short: true)
             let weeklyReset = resetText(snapshot.secondary?.resetsAt, short: false)
-            resetLabel?.stringValue = "重置 5h \(primaryReset) · 周 \(weeklyReset)"
+            resetLabel?.stringValue = store.tr("touch_bar_reset", primaryReset, weeklyReset)
         } else {
-            resetLabel?.stringValue = store.isLoading ? "正在读取 Usage…" : "Usage 暂不可用"
+            resetLabel?.stringValue = store.isLoading ? store.tr("loading_usage") : store.tr("usage_unavailable")
         }
         refreshButton?.isEnabled = !store.isLoading
     }
@@ -750,10 +782,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
 
     private func resetText(_ date: Date?, short: Bool) -> String {
         guard let date else { return "–" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = short ? "HH:mm" : "M/d HH:mm"
-        return formatter.string(from: date)
+        return store.formatDate(date, includeDate: !short)
     }
 
     private func applyPresentationMode() {
@@ -780,72 +809,82 @@ struct SettingsView: View {
     @ObservedObject var store: UsageStore
 
     private let icons = [
-        ("gauge.with.dots.needle.67percent", "仪表盘"),
-        ("gauge.medium", "简洁仪表"),
-        ("speedometer", "速度表"),
-        ("chart.bar.fill", "柱状图"),
-        ("chart.line.uptrend.xyaxis", "趋势图"),
-        ("percent", "百分比"),
-        ("bolt.circle.fill", "闪电"),
-        ("flame.fill", "火焰"),
-        ("sparkles", "星光"),
-        ("terminal.fill", "终端"),
-        ("command.circle.fill", "Command"),
-        ("cpu", "处理器"),
-        ("memorychip", "芯片"),
-        ("timer", "计时器"),
-        ("clock.arrow.circlepath", "刷新时钟"),
-        ("waveform.path.ecg", "状态波形"),
-        ("none", "隐藏图标")
+        ("gauge.with.dots.needle.67percent", "icon_gauge"),
+        ("gauge.medium", "icon_simple_gauge"),
+        ("speedometer", "icon_speedometer"),
+        ("chart.bar.fill", "icon_bar_chart"),
+        ("chart.line.uptrend.xyaxis", "icon_trend"),
+        ("percent", "icon_percent"),
+        ("bolt.circle.fill", "icon_bolt"),
+        ("flame.fill", "icon_flame"),
+        ("sparkles", "icon_sparkles"),
+        ("terminal.fill", "icon_terminal"),
+        ("command.circle.fill", "icon_command"),
+        ("cpu", "icon_cpu"),
+        ("memorychip", "icon_chip"),
+        ("timer", "icon_timer"),
+        ("clock.arrow.circlepath", "icon_refresh_clock"),
+        ("waveform.path.ecg", "icon_waveform"),
+        ("none", "icon_hidden")
     ]
 
     var body: some View {
         Form {
-            Section("菜单栏") {
-                Picker("图标", selection: $store.menuIconName) {
+            Section(store.tr("section_language")) {
+                Picker(store.tr("language"), selection: $store.appLanguage) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language == .system ? store.tr("system_default") : language.nativeName)
+                            .tag(language)
+                    }
+                }
+            }
+
+            Section(store.tr("section_menu_bar")) {
+                Picker(store.tr("icon"), selection: $store.menuIconName) {
                     ForEach(icons, id: \.0) { icon in
-                        Label(icon.1, systemImage: icon.0 == "none" ? "eye.slash" : icon.0)
+                        Label(store.tr(icon.1), systemImage: icon.0 == "none" ? "eye.slash" : icon.0)
                             .tag(icon.0)
                     }
                 }
 
                 settingSlider(
-                    title: "图标大小",
+                    title: store.tr("icon_size"),
                     value: $store.menuIconSize,
                     range: 9...18,
                     suffix: "\(Int(store.menuIconSize)) pt"
                 )
 
                 settingSlider(
-                    title: "文字字号",
+                    title: store.tr("text_size"),
                     value: $store.menuTextSize,
                     range: 8...18,
                     suffix: "\(Int(store.menuTextSize)) pt"
                 )
             }
 
-            Section("通用") {
-                Toggle("登录时自动启动", isOn: Binding(
+            Section(store.tr("section_general")) {
+                Toggle(store.tr("launch_at_login"), isOn: Binding(
                     get: { store.launchAtLogin },
                     set: { store.setLaunchAtLogin($0) }
                 ))
             }
 
             Section("Touch Bar") {
-                Toggle("显示 Usage 信息", isOn: $store.touchBarEnabled)
-                Toggle("Codex 前台时自动显示", isOn: $store.touchBarWhenCodexActive)
+                Toggle(store.tr("show_touch_bar"), isOn: $store.touchBarEnabled)
+                Toggle(store.tr("auto_touch_bar"), isOn: $store.touchBarWhenCodexActive)
                     .disabled(!store.touchBarEnabled || !TouchBarSystemModal.isAvailable)
 
                 Text(TouchBarSystemModal.isAvailable
-                     ? "显示 5 小时与每周额度、进度和重置时间。"
-                     : "当前系统不支持前台常驻；本应用激活时仍可显示。")
+                     ? store.tr("touch_bar_description")
+                     : store.tr("touch_bar_unavailable"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding(4)
-        .frame(width: 440, height: 430)
+        .environment(\.locale, store.appLanguage.locale)
+        .frame(width: 440, height: 500)
     }
 
     @ViewBuilder
@@ -905,6 +944,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Publishers.CombineLatest3(store.$menuIconName, store.$menuIconSize, store.$menuTextSize)
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _, _ in self?.updateStatusItem() }
+            .store(in: &subscriptions)
+
+        store.$appLanguage
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.settingsWindow?.title = self.store.tr("settings_window_title")
+            }
             .store(in: &subscriptions)
 
         updateStatusItem()
@@ -975,12 +1022,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentSettingsWindow() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 430),
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 500),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Codex Usage Bar 设置"
+            window.title = store.tr("settings_window_title")
             window.isReleasedWhenClosed = false
             window.center()
             window.contentView = NSHostingView(rootView: SettingsView(store: store))

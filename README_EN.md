@@ -16,6 +16,7 @@
 - Shows five-hour and weekly remaining usage in the menu bar.
 - Uses a native macOS menu for progress, reset times, credits, and resets.
 - Configurable menu bar icon, icon size, and text size.
+- Follows the system language by default, with in-app switching between Simplified Chinese, Traditional Chinese, English, Japanese, Korean, and Spanish.
 - Optional launch at login and automatic refresh every five minutes.
 - Touch Bar progress, percentages, reset times, and manual refresh.
 - Optional automatic Touch Bar presentation while Codex is frontmost.
