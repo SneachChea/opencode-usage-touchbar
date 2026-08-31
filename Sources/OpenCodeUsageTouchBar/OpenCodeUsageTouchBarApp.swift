@@ -503,13 +503,8 @@ final class UsageStore: ObservableObject {
     @Published var touchBarMode: TouchBarMode {
         didSet {
             UserDefaults.standard.set(touchBarMode.rawValue, forKey: "touchBarMode")
-            touchBarHidden = false
         }
     }
-    /// Set by the x button on the Touch Bar. Not persisted: presentation
-    /// resumes when the mode changes, when the popover button is used, or
-    /// after the app restarts.
-    @Published var touchBarHidden = false
     @Published private(set) var codexConfigured = CodexUsageClient.isInstalled
     @Published var appLanguage: AppLanguage {
         didSet {
@@ -533,19 +528,9 @@ final class UsageStore: ObservableObject {
         menuIconName = defaults.string(forKey: "menuIconName") ?? "gauge.with.dots.needle.67percent"
         menuIconSize = defaults.object(forKey: "menuIconSize") as? Double ?? 12
         menuTextSize = defaults.object(forKey: "menuTextSize") as? Double ?? 12
-        if let raw = defaults.string(forKey: "touchBarMode"), let mode = TouchBarMode(rawValue: raw) {
-            touchBarMode = mode
-        } else {
-            let enabled = defaults.object(forKey: "touchBarEnabled") as? Bool ?? true
-            let whenCodex = defaults.object(forKey: "touchBarWhenCodexActive") as? Bool ?? true
-            touchBarMode = if !enabled {
-                .disabled
-            } else if whenCodex {
-                .codexActive
-            } else {
-                .always
-            }
-        }
+        // The bundle identifier changed at rename, so old preferences are
+        // unreachable; default to the persistent mode the user sees.
+        touchBarMode = defaults.string(forKey: "touchBarMode").flatMap(TouchBarMode.init(rawValue:)) ?? .always
         appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
         openCodeGoKeyStored = KeychainStore.loadOpenCodeGoAPIKey() != nil
         refresh()
@@ -599,10 +584,6 @@ final class UsageStore: ObservableObject {
         formatter.locale = appLanguage.locale
         formatter.setLocalizedDateFormatFromTemplate(includeDate ? "MdHm" : "Hm")
         return formatter.string(from: date)
-    }
-
-    func hideTouchBar() {
-        touchBarHidden = true
     }
 
     func refresh() {
@@ -856,14 +837,6 @@ struct UsagePopover: View {
                     Label(store.tr("official_usage"), systemImage: "safari")
                 }
 
-                if store.touchBarHidden, store.touchBarMode != .disabled {
-                    Button {
-                        store.touchBarHidden = false
-                    } label: {
-                        Label(store.tr("touch_bar_show"), systemImage: "touchbar")
-                    }
-                }
-
                 Spacer()
 
                 Button {
@@ -970,14 +943,11 @@ enum TouchBarSystemModal {
 private extension NSTouchBarItem.Identifier {
     static let fiveHourUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.five-hour")
     static let weeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.weekly")
-    static let resetTimes = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.reset-times")
     static let refreshUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.refresh")
     static let goRollingUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-rolling")
     static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-weekly")
     static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-monthly")
-    static let goResetTimes = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-reset-times")
     static let openCodeLogo = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.opencode-logo")
-    static let hideUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.hide")
     static let noUsageSource = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.no-source")
 }
 
@@ -1015,7 +985,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private var fiveHourProgress: TouchBarProgressView?
     private var weeklyLabel: NSTextField?
     private var weeklyProgress: TouchBarProgressView?
-    private var resetLabel: NSTextField?
     private var refreshButton: NSButton?
     private var goRollingLabel: NSTextField?
     private var goRollingProgress: TouchBarProgressView?
@@ -1023,7 +992,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private var goWeeklyProgress: TouchBarProgressView?
     private var goMonthlyLabel: NSTextField?
     private var goMonthlyProgress: TouchBarProgressView?
-    private var goResetLabel: NSTextField?
     private var subscriptions = Set<AnyCancellable>()
     private var systemModalVisible = false
     private var codexIsFrontmost = false
@@ -1063,11 +1031,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             .store(in: &subscriptions)
 
         store.$touchBarMode
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.applyPresentationMode(reassert: true) }
-            .store(in: &subscriptions)
-
-        store.$touchBarHidden
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.applyPresentationMode(reassert: true) }
             .store(in: &subscriptions)
@@ -1141,19 +1104,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             weeklyProgress = result.progress
             updateItems()
             return result.item
-        case .resetTimes:
-            let item = NSCustomTouchBarItem(identifier: identifier)
-            let label = NSTextField(labelWithString: store.tr("loading_reset"))
-            label.font = .systemFont(ofSize: 11, weight: .regular)
-            label.textColor = .secondaryLabelColor
-            label.alignment = .center
-            label.lineBreakMode = .byTruncatingMiddle
-            label.widthAnchor.constraint(equalToConstant: 160).isActive = true
-            item.view = label
-            item.customizationLabel = store.tr("reset_customization")
-            resetLabel = label
-            updateItems()
-            return item
         case .refreshUsage:
             let item = NSCustomTouchBarItem(identifier: identifier)
             let button = NSButton(
@@ -1161,7 +1111,10 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 target: self,
                 action: #selector(refreshUsage)
             )
-            button.bezelColor = .controlAccentColor
+            // Compact borderless icon instead of the default full-height bezel.
+            button.isBordered = false
+            button.contentTintColor = .controlAccentColor
+            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
             item.view = button
             item.customizationLabel = store.tr("refresh_codex_usage")
             refreshButton = button
@@ -1185,19 +1138,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             goMonthlyProgress = result.progress
             updateItems()
             return result.item
-        case .goResetTimes:
-            let item = NSCustomTouchBarItem(identifier: identifier)
-            let label = NSTextField(labelWithString: store.tr("loading_reset"))
-            label.font = .systemFont(ofSize: 11, weight: .regular)
-            label.textColor = .secondaryLabelColor
-            label.alignment = .center
-            label.lineBreakMode = .byTruncatingMiddle
-            label.widthAnchor.constraint(equalToConstant: 170).isActive = true
-            item.view = label
-            item.customizationLabel = store.tr("go_reset_customization")
-            goResetLabel = label
-            updateItems()
-            return item
         case .noUsageSource:
             let item = NSCustomTouchBarItem(identifier: identifier)
             let label = NSTextField(labelWithString: store.tr("no_usage_source"))
@@ -1214,16 +1154,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             view.widthAnchor.constraint(equalToConstant: 30).isActive = true
             item.view = view
             item.customizationLabel = "OpenCode"
-            return item
-        case .hideUsage:
-            let item = NSCustomTouchBarItem(identifier: identifier)
-            let button = NSButton(
-                image: NSImage(systemSymbolName: "xmark", accessibilityDescription: store.tr("hide_usage"))!,
-                target: self,
-                action: #selector(hideUsage)
-            )
-            item.view = button
-            item.customizationLabel = store.tr("hide_usage")
             return item
         default:
             return nil
@@ -1290,22 +1220,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             progress: goMonthlyProgress
         )
 
-        if let snapshot = store.snapshot {
-            let primaryReset = resetText(snapshot.primary?.resetsAt, short: true)
-            let weeklyReset = resetText(snapshot.secondary?.resetsAt, short: false)
-            resetLabel?.stringValue = store.tr("touch_bar_reset", primaryReset, weeklyReset)
-        } else {
-            resetLabel?.stringValue = store.isLoading ? store.tr("loading_usage") : store.tr("usage_unavailable")
-        }
-
-        if let go = store.openCodeGoSnapshot {
-            let rollingReset = resetText(go.rolling?.resetsAt, short: true)
-            let weeklyReset = resetText(go.weekly?.resetsAt, short: false)
-            let monthlyReset = resetText(go.monthly?.resetsAt, short: false)
-            goResetLabel?.stringValue = store.tr("go_touch_bar_reset", rollingReset, weeklyReset, monthlyReset)
-        } else {
-            goResetLabel?.stringValue = store.openCodeGoIsLoading ? store.tr("loading_usage") : store.tr("usage_unavailable")
-        }
         refreshButton?.isEnabled = !store.isLoading && !store.openCodeGoIsLoading
     }
 
@@ -1318,18 +1232,14 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 .fixedSpaceSmall,
                 .goWeeklyUsage,
                 .fixedSpaceSmall,
-                .goMonthlyUsage,
-                .fixedSpaceSmall,
-                .goResetTimes
+                .goMonthlyUsage
             ]
             : []
         let codexIdentifiers: [NSTouchBarItem.Identifier] = store.codexConfigured
             ? [
                 .fiveHourUsage,
                 .fixedSpaceSmall,
-                .weeklyUsage,
-                .fixedSpaceSmall,
-                .resetTimes
+                .weeklyUsage
             ]
             : []
         var identifiers = codexIdentifiers + goIdentifiers
@@ -1340,7 +1250,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 .noUsageSource
             ]
         }
-        identifiers += [.flexibleSpace, .refreshUsage, .fixedSpaceSmall, .hideUsage]
+        identifiers += [.flexibleSpace, .refreshUsage]
         guard touchBar.defaultItemIdentifiers != identifiers else { return }
         touchBar.defaultItemIdentifiers = identifiers
     }
@@ -1372,18 +1282,12 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         progress?.tintColor = color
     }
 
-    private func resetText(_ date: Date?, short: Bool) -> String {
-        guard let date else { return "–" }
-        return store.formatDate(date, includeDate: !short)
-    }
-
     private func applyPresentationMode(reassert: Bool = false) {
         let mode = store.touchBarMode
         // Public-API path: still shows the bar while this app itself is active,
         // and is the only path when the system-modal SPI is unavailable.
         NSApp.touchBar = mode == .disabled ? nil : touchBar
         let shouldShow = mode != .disabled &&
-            !store.touchBarHidden &&
             (mode == .always || codexIsFrontmost) &&
             TouchBarSystemModal.isAvailable
 
@@ -1396,7 +1300,7 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 TouchBarSystemModal.present(touchBar)
             }
         } else if systemModalVisible {
-            if mode == .disabled || store.touchBarHidden {
+            if mode == .disabled {
                 TouchBarSystemModal.dismiss(touchBar)
             } else {
                 TouchBarSystemModal.minimize(touchBar)
@@ -1416,10 +1320,6 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             systemModalVisible = false
         }
         NSApp.touchBar = nil
-    }
-
-    @objc private func hideUsage() {
-        store.hideTouchBar()
     }
 
     @objc private func refreshUsage() {

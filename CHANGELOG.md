@@ -4,19 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Touch Bar now defaults to `Always visible` (persistent) on a clean
+  preferences domain instead of silently falling back to `Only while Codex is
+  active`.
+
+### Changed
+
+- Removed the reset-time text items from the Touch Bar (Codex and OpenCode Go);
+  the bar now shows only the usage percentages and progress.
+- Removed the in-bar `x` hide button (it duplicated the native close/Control
+  Strip affordance); the mode picker restores the native Touch Bar.
+- The Touch Bar refresh button renders as a compact borderless icon.
+- Project renamed to OpenCode Usage TouchBar (`opencode-usage-touchbar`),
+  continuing the original [Codex Usage Bar](https://github.com/yizhigou/codex-usage-bar).
+  New app name, bundle identifier, executable name, keychain service, and
+  release artifact names; previously stored OpenCode Go API keys must be
+  re-entered after upgrade.
+
 ### Added
 
 - OpenCode Go usage tracking alongside Codex: rolling (5-hour), weekly, and monthly limits.
 - OpenCode Go section in the usage menu with reset times and error reporting.
-- OpenCode Go progress, percentages, and reset times on the Touch Bar.
+- OpenCode Go progress and percentages on the Touch Bar.
 - OpenCode Go API key entry in Settings, stored securely in the macOS Keychain (environment variable fallback).
 - `--self-test-opencode-go` live check and unit tests for response parsing.
 - Persistent Touch Bar: new `Always visible` mode keeps the quotas on the
   Touch Bar across app switches (Terminal, Firefox, Finder, VS Code, Safari),
   sharing the bar with the Control Strip (placement 0), re-asserted on every
   app activation, screen unlock, and system wake.
-- `x` button at the right end of the Touch Bar hides the usage info and
-  restores the native Touch Bar (re-show from the popover, or change mode).
 - OpenCode logo marks the OpenCode Go section on the Touch Bar.
 - Codex items are omitted from the Touch Bar when no local Codex executable
   is found; the section reappears automatically once Codex is installed.

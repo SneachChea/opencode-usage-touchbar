@@ -6,13 +6,11 @@ The application creates an `NSTouchBar` containing:
 
 - five-hour usage and progress;
 - weekly usage and progress;
-- reset timestamps;
 - OpenCode Go rolling, weekly, and monthly usage and progress;
-- OpenCode Go reset timestamps;
-- a manual refresh button (refreshes both Codex and OpenCode Go);
-- an `x` button (right end of the bar) that hides the usage information and
-  restores the native Touch Bar until the user re-shows it from the popover
-  or changes the Touch Bar mode.
+- a manual refresh button (refreshes both Codex and OpenCode Go), rendered as
+  a compact borderless icon. There is no in-bar hide button: the native
+  close/Control Strip affordance already provides one, so the app relies on
+  the mode picker to restore the native Touch Bar.
 
 The bar is assigned to `NSApplication.touchBar` unless the Touch Bar mode is
 `Disabled`. This path uses public AppKit APIs and shows the bar only while
@@ -46,11 +44,11 @@ Details:
 - Sections are conditional: the Codex group is only on the bar when a local
   Codex executable is found; the OpenCode group (introduced by the OpenCode
   logo) is only there when an API key is configured. An empty bar just shows
-  the refresh and `x` buttons.
+  the refresh button.
 
 - Presentation uses `placement 0` with a `nil` system-tray identifier, which
   shares the Touch Bar with the Apple Control Strip. The Control Strip stays
-  usable in every mode. Without a tray anchor, `x` uses
+  usable in every mode. Without a tray anchor, `Disabled` mode uses
   `dismissSystemModalTouchBar:` (deterministic restore); `minimize` is kept
   only for the `Only while Codex is active` focus-out case.
 - `DFRSystemModalShowsCloseBoxWhenFrontMost(false)` hides the system close
@@ -79,8 +77,6 @@ Details:
 The native Touch Bar is restored immediately when:
 
 - the mode is set to `Disabled` (dismisses the modal bar);
-- the `x` button is tapped (dismisses; re-show via the popover's
-  `Show Touch Bar` button or any mode change);
 - the mode is set to `Only while Codex is active` and Codex loses focus
   (minimizes);
 - the application quits (`applicationWillTerminate` → `shutDown()` →

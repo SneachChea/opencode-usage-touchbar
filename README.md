@@ -24,7 +24,7 @@
 - Configurable menu bar icon, icon size, and text size.
 - Follows the system language by default, with in-app switching between Simplified Chinese, Traditional Chinese, English, Japanese, Korean, and Spanish.
 - Optional launch at login and automatic refresh every five minutes.
-- Touch Bar progress, percentages, reset times, and manual refresh.
+- Touch Bar progress, percentages, and manual refresh.
 - Optional automatic Touch Bar presentation while Codex is frontmost.
 - Optional OpenCode Go usage (rolling, weekly, and monthly) in the menu bar, menu, and Touch Bar.
 - No third-party dependencies.
