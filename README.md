@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="128" height="128" alt="OpenCode Usage TouchBar icon">
+  <img src="Resources/AppIcon-1024.png" width="128" height="128" alt="OpenCode Usage TouchBar icon">
 </p>
 
 <h1 align="center">OpenCode Usage TouchBar</h1>
