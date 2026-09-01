@@ -42,6 +42,11 @@ OpenCode Usage TouchBar
   Touch Bar controller.
 - `UsageTouchBarController` renders and updates the Touch Bar for both sources
   and observes which application is frontmost.
+- `CodexPetPackage` parses a local pet manifest (`pet.json`), decodes the
+  spritesheet once, and crops the canonical animation rows.
+- `TouchBarPetView` plays the selected pet on the Touch Bar: ambient random
+  states, a tap-triggered wave, and an App Nap activity held only while the
+  pet is actually visible.
 - `TouchBarSystemModal` isolates the optional undocumented AppKit selectors and
   checks their availability before use.
 

@@ -11,6 +11,12 @@ The application creates an `NSTouchBar` containing:
   a compact borderless icon. There is no in-bar hide button: the native
   close/Control Strip affordance already provides one, so the app relies on
   the mode picker to restore the native Touch Bar.
+- an animated pet item (when enabled in Settings → Pet): a compact 30×30 px
+  button showing the pet from a local `~/.codex/pets/<pet-id>/` package. It
+  idles, plays a random ambient state at a configurable interval (default
+  30–90 s, adjustable from 5–300 s in Settings), and waves when
+  tapped. The V1 (8×9) and V2 (8×11) atlases are supported; only the nine
+  standard animation rows are used.
 
 The bar is assigned to `NSApplication.touchBar` unless the Touch Bar mode is
 `Disabled`. This path uses public AppKit APIs and shows the bar only while
@@ -60,10 +66,12 @@ Details:
   (twice: the wake notification can arrive before DFR is ready to accept a
   presentation). This is what makes the quotas survive Terminal → Firefox →
   Finder → VS Code switches and sleep/wake cycles.
-- App Nap is suppressed with
-  `ProcessInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep])`
-  so refreshes and re-presentation keep working while the app is in the
-  background.
+- The animated pet holds an App Nap suppression token
+  (`ProcessInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep])`)
+  only while it is actually attached to a presented bar. The token is released
+  as soon as the bar is dismissed, the pet is disabled, or the pet item is
+  removed. There is no permanent app-wide activity, keeping battery impact
+  bounded to the times the pet is animated.
 - In `Only while Codex is active` mode the modal bar is minimized when
   Codex (`com.openai.codex`) is not frontmost. OpenCode Go runs inside a
   terminal, which cannot be distinguished reliably from other terminal

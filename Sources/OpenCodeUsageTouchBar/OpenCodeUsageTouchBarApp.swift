@@ -7,6 +7,7 @@ import ServiceManagement
 import SwiftUI
 
 private let usageDashboardURL = URL(string: "https://chatgpt.com/codex/settings/usage")!
+private let petGalleryURL = URL(string: "https://codexpet.top")!
 
 struct RateWindow: Sendable {
     let usedPercent: Int
@@ -505,6 +506,31 @@ final class UsageStore: ObservableObject {
             UserDefaults.standard.set(touchBarMode.rawValue, forKey: "touchBarMode")
         }
     }
+    @Published var petID: String? {
+        didSet {
+            if let petID {
+                UserDefaults.standard.set(petID, forKey: "petID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "petID")
+            }
+        }
+    }
+    @Published var petsFolderOverride: String? {
+        didSet {
+            if let petsFolderOverride {
+                UserDefaults.standard.set(petsFolderOverride, forKey: "petFolder")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "petFolder")
+            }
+        }
+    }
+    @Published var petMinInterval: Double {
+        didSet { UserDefaults.standard.set(petMinInterval, forKey: "petMinInterval") }
+    }
+    @Published var petMaxInterval: Double {
+        didSet { UserDefaults.standard.set(petMaxInterval, forKey: "petMaxInterval") }
+    }
+    @Published private(set) var availablePets: [PetSummary] = []
     @Published private(set) var codexConfigured = CodexUsageClient.isInstalled
     @Published var appLanguage: AppLanguage {
         didSet {
@@ -532,7 +558,12 @@ final class UsageStore: ObservableObject {
         // unreachable; default to the persistent mode the user sees.
         touchBarMode = defaults.string(forKey: "touchBarMode").flatMap(TouchBarMode.init(rawValue:)) ?? .always
         appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
+        petID = defaults.string(forKey: "petID")
+        petsFolderOverride = defaults.string(forKey: "petFolder")
+        petMinInterval = defaults.object(forKey: "petMinInterval") as? Double ?? 30
+        petMaxInterval = defaults.object(forKey: "petMaxInterval") as? Double ?? 90
         openCodeGoKeyStored = KeychainStore.loadOpenCodeGoAPIKey() != nil
+        refreshAvailablePets()
         refresh()
         refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -545,6 +576,24 @@ final class UsageStore: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+    }
+
+    var petsFolderURL: URL? {
+        if let petsFolderOverride {
+            return URL(fileURLWithPath: petsFolderOverride)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/pets", isDirectory: true)
+    }
+
+    var petsFolderDisplay: String { petsFolderURL?.path ?? "~/.codex/pets" }
+
+    func refreshAvailablePets() {
+        guard let url = petsFolderURL else {
+            availablePets = []
+            return
+        }
+        availablePets = CodexPetLibrary.scan(folder: url)
     }
 
     var menuTitle: String {
@@ -949,6 +998,7 @@ private extension NSTouchBarItem.Identifier {
     static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-monthly")
     static let openCodeLogo = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.opencode-logo")
     static let noUsageSource = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.no-source")
+    static let pet = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.pet")
 }
 
 final class TouchBarProgressView: NSView {
@@ -976,6 +1026,185 @@ final class TouchBarProgressView: NSView {
     }
 }
 
+/// Animated, tappable pet shown on the Touch Bar. The anti-App-Nap activity
+/// is scoped: it is held only while this view is attached to a presented bar
+/// and released as soon as the bar is dismissed or the pet is disabled.
+@MainActor
+final class TouchBarPetView: NSButton {
+    private let package: CodexPetPackage
+    private let store: UsageStore
+    private var images: [PetAction: [NSImage]] = [:]
+    private var petState: PetAction = .idle
+    private var frameIndex = 0
+    private var currentLoops = 0
+    private var loopsRemaining = 1
+    private var pendingReturnToIdle = false
+    private var frameTimer: Timer?
+    private var ambientTimer: Timer?
+    private var activity: NSObjectProtocol?
+    private var subscriptions = Set<AnyCancellable>()
+
+    init(package: CodexPetPackage, store: UsageStore) {
+        self.package = package
+        self.store = store
+        super.init(frame: .zero)
+        isBordered = false
+        imageScaling = .scaleProportionallyUpOrDown
+        target = self
+        action = #selector(petTapped)
+        setAccessibilityLabel(store.tr("pet_accessibility", package.displayName))
+        widthAnchor.constraint(equalToConstant: 30).isActive = true
+        heightAnchor.constraint(equalToConstant: 30).isActive = true
+        let frameSize = NSSize(width: CGFloat(PetAtlas.cellWidth), height: CGFloat(PetAtlas.cellHeight))
+        for (action, frames) in package.frames {
+            images[action] = frames.map { NSImage(cgImage: $0, size: frameSize) }
+        }
+
+        store.$petMinInterval
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.ambientSettingsChanged() }
+            .store(in: &subscriptions)
+        store.$petMaxInterval
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.ambientSettingsChanged() }
+            .store(in: &subscriptions)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        frameTimer?.invalidate()
+        ambientTimer?.invalidate()
+        if let activity {
+            ProcessInfo.processInfo.endActivity(activity)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            beginActivity()
+            pendingReturnToIdle = false
+            setState(.idle)
+            armAmbientTimer()
+        } else {
+            endActivity()
+            frameTimer?.invalidate()
+            ambientTimer?.invalidate()
+        }
+    }
+
+    @objc private func petTapped() {
+        play(.waving, loops: 1)
+    }
+
+    private func play(_ action: PetAction, loops: Int) {
+        guard let frames = images[action], !frames.isEmpty else { return }
+        petState = action
+        frameIndex = 0
+        currentLoops = 0
+        loopsRemaining = loops
+        pendingReturnToIdle = true
+        showFrame()
+        armFrameTimer()
+    }
+
+    private func setState(_ action: PetAction) {
+        petState = action
+        frameIndex = 0
+        currentLoops = 0
+        showFrame()
+        armFrameTimer()
+    }
+
+    private func showFrame() {
+        guard let frames = images[petState], !frames.isEmpty else {
+            image = nil
+            return
+        }
+        image = frames[min(frameIndex, frames.count - 1)]
+    }
+
+    private func advanceFrame() {
+        guard let frames = images[petState], !frames.isEmpty else { return }
+        frameIndex += 1
+        if frameIndex >= frames.count {
+            frameIndex = 0
+            currentLoops += 1
+            if pendingReturnToIdle && currentLoops >= loopsRemaining {
+                finishAction()
+            }
+        }
+        showFrame()
+        armFrameTimer()
+    }
+
+    private func finishAction() {
+        pendingReturnToIdle = false
+        setState(.idle)
+        armAmbientTimer()
+    }
+
+    /// Timers run in `.common` mode so the pet keeps animating while a menu
+    /// or other control is tracking (the default mode freezes them).
+    private func armFrameTimer() {
+        frameTimer?.invalidate()
+        let delay = frameDelay()
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.advanceFrame() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frameTimer = timer
+    }
+
+    private func frameDelay() -> TimeInterval {
+        let durations = PetAtlas.frameDurations[petState] ?? []
+        guard !durations.isEmpty else { return 0.12 }
+        return durations[min(frameIndex, durations.count - 1)]
+    }
+
+    private func armAmbientTimer() {
+        ambientTimer?.invalidate()
+        let minSeconds = Int(min(store.petMinInterval, store.petMaxInterval))
+        let maxSeconds = Int(max(store.petMinInterval, store.petMaxInterval))
+        let delay = TimeInterval(Int.random(in: minSeconds...maxSeconds))
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.ambientTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        ambientTimer = timer
+    }
+
+    private func ambientSettingsChanged() {
+        // Re-arm with the new interval when the change happens while the pet
+        // is visible; a change while hidden applies on the next presentation.
+        guard window != nil else { return }
+        armAmbientTimer()
+    }
+
+    private func ambientTick() {
+        guard let action = PetAtlas.ambientActions.randomElement() else { return }
+        let loops = (action == .waving || action == .jumping) ? 1 : 2
+        play(action, loops: loops)
+    }
+
+    private func beginActivity() {
+        guard activity == nil else { return }
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Keep the Touch Bar pet animation running"
+        )
+    }
+
+    private func endActivity() {
+        guard let activity else { return }
+        self.activity = nil
+        ProcessInfo.processInfo.endActivity(activity)
+    }
+}
+
 @MainActor
 final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     let touchBar = NSTouchBar()
@@ -992,6 +1221,8 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     private var goWeeklyProgress: TouchBarProgressView?
     private var goMonthlyLabel: NSTextField?
     private var goMonthlyProgress: TouchBarProgressView?
+    private var petPackage: CodexPetPackage?
+    private var petView: TouchBarPetView?
     private var subscriptions = Set<AnyCancellable>()
     private var systemModalVisible = false
     private var codexIsFrontmost = false
@@ -1001,8 +1232,12 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         super.init()
 
         touchBar.delegate = self
+        // Deliberately bumped when the default layout changes: macOS otherwise
+        // re-applies the persisted custom item order, which pins newly added
+        // items (the pet) to the right end of the bar. The previous identifier
+        // referenced items that no longer exist (reset times, hide button).
         touchBar.customizationIdentifier = NSTouchBar.CustomizationIdentifier(
-            "com.local.opencodeusagetouchbar.usage"
+            "com.local.opencodeusagetouchbar.usage.pet-v1"
         )
         updateDefaultItemIdentifiers()
 
@@ -1038,6 +1273,16 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         store.$codexConfigured
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateItems() }
+            .store(in: &subscriptions)
+
+        store.$petID
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.reloadPetPackage() }
+            .store(in: &subscriptions)
+
+        store.$petsFolderOverride
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.reloadPetPackage() }
             .store(in: &subscriptions)
 
         NSWorkspace.shared.notificationCenter.publisher(
@@ -1138,6 +1383,17 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             goMonthlyProgress = result.progress
             updateItems()
             return result.item
+        case .pet:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            if let petPackage {
+                let view = TouchBarPetView(package: petPackage, store: store)
+                petView = view
+                item.view = view
+            } else {
+                item.view = NSView()
+            }
+            item.customizationLabel = store.tr("pet_customization")
+            return item
         case .noUsageSource:
             let item = NSCustomTouchBarItem(identifier: identifier)
             let label = NSTextField(labelWithString: store.tr("no_usage_source"))
@@ -1223,7 +1479,30 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         refreshButton?.isEnabled = !store.isLoading && !store.openCodeGoIsLoading
     }
 
+    private func reloadPetPackage() {
+        guard let petID = store.petID,
+              CodexPetPackage.isValidPetID(petID),
+              let petsFolderURL = store.petsFolderURL else {
+            petPackage = nil
+            petView = nil
+            updateItems()
+            return
+        }
+        petPackage = try? CodexPetPackage.load(folder: petsFolderURL.appendingPathComponent(petID))
+        petView = nil
+        if petPackage != nil {
+            // Force the bar to rebuild items so a pet change applies even
+            // when the same id resolves to new content (e.g. a folder switch
+            // to a same-named pet).
+            touchBar.defaultItemIdentifiers = []
+        }
+        updateItems()
+    }
+
     private func updateDefaultItemIdentifiers() {
+        let petIdentifiers: [NSTouchBarItem.Identifier] = petPackage != nil
+            ? [.pet, .fixedSpaceSmall]
+            : []
         let goIdentifiers: [NSTouchBarItem.Identifier] = store.openCodeGoConfigured
             ? [
                 .openCodeLogo,
@@ -1242,7 +1521,8 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
                 .weeklyUsage
             ]
             : []
-        var identifiers = codexIdentifiers + goIdentifiers
+        // Pet sits after the usage groups, right of the monthly bar.
+        var identifiers = codexIdentifiers + goIdentifiers + petIdentifiers
         if identifiers.isEmpty {
             identifiers = [
                 .openCodeLogo,
@@ -1407,6 +1687,67 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section(store.tr("section_pet")) {
+                Picker(store.tr("pet"), selection: $store.petID) {
+                    Text(store.tr("pet_none")).tag(String?.none)
+                    ForEach(store.availablePets) { pet in
+                        Text(pet.displayName).tag(Optional(pet.id))
+                    }
+                }
+
+                Text(store.availablePets.isEmpty
+                     ? store.tr("pet_no_pets")
+                     : store.tr("pet_folder_label", store.petsFolderDisplay))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let selectedID = store.petID,
+                   let summary = store.availablePets.first(where: { $0.id == selectedID }),
+                   let warningKey = summary.warningKey {
+                    Text(store.tr(warningKey))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                if store.petID != nil,
+                   !store.availablePets.contains(where: { $0.id == store.petID }) {
+                    Text(store.tr("pet_selected_missing"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                settingSlider(
+                    title: store.tr("pet_min_interval"),
+                    value: $store.petMinInterval,
+                    range: 5...300,
+                    step: 5,
+                    suffix: "s"
+                )
+
+                settingSlider(
+                    title: store.tr("pet_max_interval"),
+                    value: $store.petMaxInterval,
+                    range: 5...300,
+                    step: 5,
+                    suffix: "s"
+                )
+
+                HStack {
+                    Button(store.tr("pet_refresh")) { store.refreshAvailablePets() }
+                    Button(store.tr("pet_choose_folder")) { choosePetFolder() }
+                    if store.petsFolderOverride != nil {
+                        Button(store.tr("pet_reset_folder")) {
+                            store.petsFolderOverride = nil
+                            store.refreshAvailablePets()
+                        }
+                    }
+                }
+
+                Button(store.tr("pet_open_gallery")) {
+                    NSWorkspace.shared.open(petGalleryURL)
+                }
+            }
+
             Section(store.tr("go_title")) {
                 SecureField(store.tr("opencode_go_key_placeholder"), text: $apiKeyInput)
                 HStack {
@@ -1442,7 +1783,19 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding(4)
         .environment(\.locale, store.appLanguage.locale)
-        .frame(width: 440, height: 560)
+        .frame(width: 440, height: 720)
+    }
+
+    private func choosePetFolder() {
+        let panel = NSOpenPanel()
+        panel.title = store.tr("pet_choose_folder")
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = store.petsFolderURL
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.petsFolderOverride = url.path
+        store.refreshAvailablePets()
     }
 
     @ViewBuilder
@@ -1476,12 +1829,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var touchBarController: UsageTouchBarController?
     private var showSettingsAfterMenuCloses = false
     private var subscriptions = Set<AnyCancellable>()
-    // App Nap would freeze refreshes and Touch Bar re-presentation while the
-    // app is in the background, which is exactly when they are needed.
-    private let touchBarActivity = ProcessInfo.processInfo.beginActivity(
-        options: [.userInitiatedAllowingIdleSystemSleep],
-        reason: "Keep usage refreshes and the persistent Touch Bar alive"
-    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1643,7 +1990,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func presentSettingsWindow() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 720),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false

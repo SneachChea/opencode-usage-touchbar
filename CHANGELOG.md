@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Animated Codex pet on the Touch Bar: pick any pet installed under
+  `~/.codex/pets/` (or a custom folder) in Settings → Pet. The pet idles,
+  changes state randomly (interval configurable in Settings, 5–300 s), and
+  waves when tapped. V1 (8×9) and V2 (8×11) Codex pet atlases are supported.
+
+### Changed
+
+- App Nap suppression is now scoped to the animated Touch Bar pet while it is
+  visible; the permanent app-wide anti-App-Nap activity was removed.
+
 ### Fixed
 
 - The Touch Bar now defaults to `Always visible` (persistent) on a clean

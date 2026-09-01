@@ -25,6 +25,9 @@
 - Follows the system language by default, with in-app switching between Simplified Chinese, Traditional Chinese, English, Japanese, Korean, and Spanish.
 - Optional launch at login and automatic refresh every five minutes.
 - Touch Bar progress, percentages, and manual refresh.
+- Animated Codex pet on the Touch Bar, loaded from pets installed under
+  `~/.codex/pets/` (compatible with [codexpet.top](https://codexpet.top)), with
+  an adjustable state-change interval (default 30–90 s) in Settings.
 - Optional automatic Touch Bar presentation while Codex is frontmost.
 - Optional OpenCode Go usage (rolling, weekly, and monthly) in the menu bar, menu, and Touch Bar.
 - No third-party dependencies.
@@ -55,6 +58,16 @@ OPENCODE_GO_API_KEY="opencode-..." open "dist/OpenCode Usage TouchBar.app"
 
 A key stored in the Keychain takes precedence over the environment variable.
 Without any key, the menu shows a hint and Codex-only usage.
+
+## Codex pet on the Touch Bar
+
+Install any pet from [codexpet.top](https://codexpet.top) with their official
+installer (it places `pet.json` and `spritesheet.webp` under
+`~/.codex/pets/<pet-id>/`), then open the app's Settings → Pet and pick it.
+The pet idles on the Touch Bar, occasionally changes state on its own, and
+waves when tapped. It is purely decorative: it never reads Codex task state
+and does not trigger any network request. A custom pets folder can be chosen
+in Settings instead of the default `~/.codex/pets/`.
 
 ## Install
 

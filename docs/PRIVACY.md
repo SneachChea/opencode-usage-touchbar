@@ -21,13 +21,20 @@ the rolling (5-hour), weekly, and monthly windows, plus their reset
 timestamps, from the OpenCode Go usage endpoint. This data is also held in
 memory for display only.
 
+When a pet is enabled in Settings, the app reads `pet.json` and the
+referenced `spritesheet.webp` from the pet folder under `~/.codex/pets/` (or a
+user-chosen folder). The image is decoded locally and cropped into animation
+frames for the Touch Bar. No pet data is transmitted anywhere.
+
 ## Data the app stores
 
 The following preferences are saved using macOS `UserDefaults`:
 
 - menu bar icon and sizing;
 - Touch Bar enablement;
-- whether to show the Touch Bar while Codex is frontmost.
+- whether to show the Touch Bar while Codex is frontmost;
+- the selected pet id and the optional pets folder override;
+- the pet state-change interval (petMinInterval / petMaxInterval).
 
 Launch-at-login state is managed by Apple's `SMAppService`.
 
