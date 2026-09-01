@@ -1768,7 +1768,7 @@ struct SettingsView: View {
                     value: $store.petMinInterval,
                     range: 5...300,
                     step: 5,
-                    suffix: "s"
+                    suffix: "\(Int(store.petMinInterval)) s"
                 )
 
                 settingSlider(
@@ -1776,7 +1776,7 @@ struct SettingsView: View {
                     value: $store.petMaxInterval,
                     range: 5...300,
                     step: 5,
-                    suffix: "s"
+                    suffix: "\(Int(store.petMaxInterval)) s"
                 )
 
                 HStack {
