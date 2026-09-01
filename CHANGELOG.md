@@ -15,6 +15,18 @@ All notable changes to this project will be documented in this file.
 
 - App Nap suppression is now scoped to the animated Touch Bar pet while it is
   visible; the permanent app-wide anti-App-Nap activity was removed.
+- The Touch Bar pet now rests on a static idle frame between animations, so a
+  resting pet no longer redraws frame-by-frame; the anti-App-Nap token scope
+  while the pet is visible is unchanged.
+- Codex usage reads parse the child response line by line (stop at the first
+  matching reply, bounded buffer), the unused stderr pipe no longer risks
+  stalling the child, and `OPENCODE_GO_API_KEY` is no longer inherited by the
+  launched Codex process.
+- OpenCode Go requests reuse one stateless ephemeral session (no cookies, no
+  on-disk cache) with a hard 15 s per-request resource timeout, and an
+  in-flight request is cancelled when the API key is saved or removed. The
+  512 KB response limit bounds which responses are accepted, not streamed
+  memory.
 
 ### Fixed
 

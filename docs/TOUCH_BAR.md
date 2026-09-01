@@ -13,9 +13,9 @@ The application creates an `NSTouchBar` containing:
   the mode picker to restore the native Touch Bar.
 - an animated pet item (when enabled in Settings → Pet): a compact 30×30 px
   button showing the pet from a local `~/.codex/pets/<pet-id>/` package. It
-  idles, plays a random ambient state at a configurable interval (default
-  30–90 s, adjustable from 5–300 s in Settings), and waves when
-  tapped. The V1 (8×9) and V2 (8×11) atlases are supported; only the nine
+  rests on a static idle frame, plays a random ambient state at a configurable
+  interval (default 30–90 s, adjustable from 5–300 s in Settings), and waves
+  when tapped. The V1 (8×9) and V2 (8×11) atlases are supported; only the nine
   standard animation rows are used.
 
 The bar is assigned to `NSApplication.touchBar` unless the Touch Bar mode is
@@ -66,12 +66,16 @@ Details:
   (twice: the wake notification can arrive before DFR is ready to accept a
   presentation). This is what makes the quotas survive Terminal → Firefox →
   Finder → VS Code switches and sleep/wake cycles.
-- The animated pet holds an App Nap suppression token
+- The animated pet rests on a static idle frame between animations: it plays a
+  random ambient action at a configurable interval (default 30–90 s), or a wave
+  on tap, and only redraws frame-by-frame while an action is actually playing.
+- The pet holds an App Nap suppression token
   (`ProcessInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep])`)
-  only while it is actually attached to a presented bar. The token is released
-  as soon as the bar is dismissed, the pet is disabled, or the pet item is
-  removed. There is no permanent app-wide activity, keeping battery impact
-  bounded to the times the pet is animated.
+  while its item is attached to a presented bar — the same scope as before this
+  release, so ambient actions keep firing while the pet is visible — and the
+  token is released when the bar is dismissed, the pet is disabled, or the pet
+  item is removed. There is no permanent app-wide activity; the battery win is
+  that a resting pet no longer redraws continuously.
 - In `Only while Codex is active` mode the modal bar is minimized when
   Codex (`com.openai.codex`) is not frontmost. OpenCode Go runs inside a
   terminal, which cannot be distinguished reliably from other terminal
