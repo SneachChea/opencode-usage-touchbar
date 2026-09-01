@@ -1128,6 +1128,9 @@ final class TouchBarPetView: NSButton {
     }
 
     private func advanceFrame() {
+        // A fired timer's Task can run just after the view detached; without
+        // this guard the chain would re-arm on a hidden view until dealloc.
+        guard window != nil else { return }
         guard let frames = images[petState], !frames.isEmpty else { return }
         frameIndex += 1
         if frameIndex >= frames.count {
@@ -1185,6 +1188,8 @@ final class TouchBarPetView: NSButton {
     }
 
     private func ambientTick() {
+        // Same detach race as advanceFrame; never start an action off-screen.
+        guard window != nil else { return }
         guard let action = PetAtlas.ambientActions.randomElement() else { return }
         let loops = (action == .waving || action == .jumping) ? 1 : 2
         play(action, loops: loops)

@@ -143,7 +143,7 @@ struct CodexPetPackage {
     /// A pet id is a folder name inside the pets directory. Reject anything
     /// that could escape it (UserDefaults can be edited by hand or tools).
     static func isValidPetID(_ id: String) -> Bool {
-        !id.isEmpty && !id.contains("/") && !id.contains("..")
+        !id.isEmpty && id != "." && !id.contains("/") && !id.contains("..")
     }
 
     /// Crops the canonical frame rows from a decoded atlas. Trailing fully
