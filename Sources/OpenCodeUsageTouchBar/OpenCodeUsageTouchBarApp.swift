@@ -284,11 +284,12 @@ enum OpenCodeGoUsageClient {
     static func fetch() async throws -> OpenCodeGoUsageSnapshot {
         guard let apiKey else { throw OpenCodeGoUsageClientError.missingAPIKey }
 
-        var request = URLRequest(url: usageURL)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var requestBuilder = URLRequest(url: usageURL)
+        requestBuilder.httpMethod = "GET"
+        requestBuilder.timeoutInterval = 15
+        requestBuilder.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        requestBuilder.setValue("application/json", forHTTPHeaderField: "Accept")
+        let request = requestBuilder
 
         let session = URLSession(configuration: .ephemeral, delegate: RedirectGuard(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
