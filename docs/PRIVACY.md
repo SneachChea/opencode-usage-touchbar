@@ -61,7 +61,8 @@ It is never written to `UserDefaults`, logs, or files, and it is sent only to
 the OpenCode Go endpoint as a bearer token. As a fallback, the key may also be
 provided through the `OPENCODE_GO_API_KEY` environment variable of the app
 process; the Keychain value takes precedence. An app launched from Finder does
-not inherit shell exports.
+not inherit shell exports. When the app starts the local Codex process, it
+explicitly removes `OPENCODE_GO_API_KEY` from that child process' environment.
 
 ## Removing local data
 

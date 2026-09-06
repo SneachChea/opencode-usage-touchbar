@@ -96,14 +96,17 @@ enum CodexUsageClient {
 
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "dumb"
+        // The OpenCode Go key belongs to this app only; never hand it to the
+        // Codex child process.
+        environment["OPENCODE_GO_API_KEY"] = nil
         process.environment = environment
 
         let input = Pipe()
         let output = Pipe()
-        let errors = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = errors
+        // stderr is never drained; a full pipe would stall the child.
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -147,37 +150,58 @@ enum CodexUsageClient {
             throw UsageClientError.launchFailed(error.localizedDescription)
         }
 
-        var responseData = Data()
-        while process.isRunning {
+        // A usage reply is well under 10 KB; 512 KB bounds a misbehaving child.
+        let maxPendingBytes = 512 * 1024
+        var pending = Data()
+        var responseLine: Data?
+        outer: while true {
             let chunk = output.fileHandleForReading.availableData
-            if chunk.isEmpty { break }
-            responseData.append(chunk)
-            if containsResponse(id: 2, in: responseData) {
-                process.terminate()
-                break
+            if chunk.isEmpty { break } // EOF: the child exited or closed stdout.
+            pending.append(chunk)
+            // Parse each complete NDJSON line once, stop at the reply we asked for.
+            for line in drainLines(from: &pending) {
+                if isResponse(id: 2, in: line) {
+                    responseLine = line
+                    break outer
+                }
             }
+            // Only a newline-less giant line can exceed the cap after draining.
+            if pending.count > maxPendingBytes { break }
         }
         try? input.fileHandleForWriting.close()
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
         timeout.cancel()
 
-        if timedOut.value && responseData.isEmpty {
-            throw UsageClientError.timedOut
+        guard let responseLine else {
+            if timedOut.value && pending.isEmpty {
+                throw UsageClientError.timedOut
+            }
+            guard pending.isEmpty == false, pending.count <= maxPendingBytes else {
+                throw UsageClientError.invalidResponse
+            }
+            // Final line may arrive without a trailing newline.
+            return try parseResponse(pending)
         }
-
-        return try parseResponse(responseData)
+        return try parseResponse(responseLine)
     }
 
-    private static func containsResponse(id: Int, in data: Data) -> Bool {
-        guard let text = String(data: data, encoding: .utf8) else { return false }
-        return text.split(whereSeparator: \.isNewline).contains { line in
-            guard let lineData = String(line).data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                return false
-            }
-            return (json["id"] as? NSNumber)?.intValue == id
+    /// Remove and return the complete `\n`-terminated lines in `buffer`, keeping
+    /// any trailing partial line for the next read.
+    static func drainLines(from buffer: inout Data) -> [Data] {
+        var lines: [Data] = []
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            lines.append(buffer.subdata(in: buffer.startIndex..<newline))
+            buffer.removeSubrange(buffer.startIndex...newline)
         }
+        return lines
+    }
+
+    static func isResponse(id: Int, in line: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+            return false
+        }
+        return (json["id"] as? NSNumber)?.intValue == id
     }
 
     private static func line(for object: [String: Any]) throws -> Data {
@@ -263,6 +287,15 @@ enum CodexUsageClient {
 
 enum OpenCodeGoUsageClient {
     private static let usageURL = URL(string: "https://opencode.ai/zen/go/v1/usage")!
+    /// Reused stateless ephemeral session: no cookies, no on-disk cache, and a
+    /// hard 15 s wall-clock bound per request (timeoutInterval alone is only an
+    /// idle-data timer).
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForResource = 15
+        return URLSession(configuration: config, delegate: RedirectGuard(), delegateQueue: nil)
+    }()
     private static var cachedAPIKey: String?
 
     static func cacheAPIKey(_ key: String?) {
@@ -291,29 +324,16 @@ enum OpenCodeGoUsageClient {
         requestBuilder.setValue("application/json", forHTTPHeaderField: "Accept")
         let request = requestBuilder
 
-        let session = URLSession(configuration: .ephemeral, delegate: RedirectGuard(), delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-
         do {
-            let (data, response) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
-                group.addTask {
-                    try await session.data(for: request)
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 20_000_000_000)
-                    throw OpenCodeGoUsageClientError.timedOut
-                }
-                guard let first = try await group.next() else {
-                    throw OpenCodeGoUsageClientError.timedOut
-                }
-                group.cancelAll()
-                return first
-            }
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw OpenCodeGoUsageClientError.invalidResponse
             }
             switch http.statusCode {
             case 200:
+                guard data.count <= 512 * 1024 else {
+                    throw OpenCodeGoUsageClientError.invalidResponse
+                }
                 return try parse(data)
             case 401, 403:
                 throw OpenCodeGoUsageClientError.invalidCredentials
@@ -546,6 +566,8 @@ final class UsageStore: ObservableObject {
     }
 
     private var refreshTask: Task<Void, Never>?
+    private var codexTask: Task<Void, Never>?
+    private var openCodeGoTask: Task<Void, Never>?
     private var lastUsageError: UsageClientError?
     private var lastOpenCodeGoError: OpenCodeGoUsageClientError?
     private var openCodeGoFetchGeneration = 0
@@ -577,6 +599,8 @@ final class UsageStore: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        codexTask?.cancel()
+        openCodeGoTask?.cancel()
     }
 
     var petsFolderURL: URL? {
@@ -648,7 +672,7 @@ final class UsageStore: ObservableObject {
         errorMessage = nil
         lastUsageError = nil
 
-        Task {
+        codexTask = Task {
             do {
                 let value = try await Task.detached(priority: .userInitiated) {
                     try CodexUsageClient.fetch()
@@ -672,7 +696,7 @@ final class UsageStore: ObservableObject {
         openCodeGoErrorMessage = nil
         lastOpenCodeGoError = nil
 
-        Task {
+        openCodeGoTask = Task {
             do {
                 let value = try await OpenCodeGoUsageClient.fetch()
                 guard generation == openCodeGoFetchGeneration else { return }
@@ -700,8 +724,7 @@ final class UsageStore: ObservableObject {
         }
         OpenCodeGoUsageClient.cacheAPIKey(trimmed)
         openCodeGoKeyStored = true
-        openCodeGoFetchGeneration += 1
-        openCodeGoIsLoading = false
+        restartOpenCodeGoFetch()
         refreshOpenCodeGo()
         return nil
     }
@@ -709,12 +732,20 @@ final class UsageStore: ObservableObject {
     func removeOpenCodeGoAPIKey() {
         KeychainStore.deleteOpenCodeGoAPIKey()
         OpenCodeGoUsageClient.cacheAPIKey(nil)
-        openCodeGoFetchGeneration += 1
-        openCodeGoIsLoading = false
+        restartOpenCodeGoFetch()
         openCodeGoKeyStored = false
         lastOpenCodeGoError = nil
         openCodeGoSnapshot = nil
         openCodeGoErrorMessage = nil
+    }
+
+    /// Invalidate the in-flight request so a saved or removed key cannot keep
+    /// being refreshed with the previous credentials.
+    private func restartOpenCodeGoFetch() {
+        openCodeGoTask?.cancel()
+        openCodeGoTask = nil
+        openCodeGoFetchGeneration += 1
+        openCodeGoIsLoading = false
     }
 
     func openDashboard() {
@@ -1027,9 +1058,12 @@ final class TouchBarProgressView: NSView {
     }
 }
 
-/// Animated, tappable pet shown on the Touch Bar. The anti-App-Nap activity
-/// is scoped: it is held only while this view is attached to a presented bar
-/// and released as soon as the bar is dismissed or the pet is disabled.
+/// Animated, tappable pet shown on the Touch Bar. Between ambient actions the
+/// pet rests on a single static idle frame: no continuous per-frame redraws.
+/// The anti-App-Nap activity is held while this view is attached to a
+/// presented bar (and released on detach or dealloc) so the ambient timer
+/// keeps firing; the app-wide activity that existed before this release does
+/// not.
 @MainActor
 final class TouchBarPetView: NSButton {
     private let package: CodexPetPackage
@@ -1088,12 +1122,12 @@ final class TouchBarPetView: NSButton {
         if window != nil {
             beginActivity()
             pendingReturnToIdle = false
-            setState(.idle)
+            showIdle()
             armAmbientTimer()
         } else {
-            endActivity()
             frameTimer?.invalidate()
             ambientTimer?.invalidate()
+            endActivity()
         }
     }
 
@@ -1102,7 +1136,11 @@ final class TouchBarPetView: NSButton {
     }
 
     private func play(_ action: PetAction, loops: Int) {
-        guard let frames = images[action], !frames.isEmpty else { return }
+        guard action != .idle, let frames = images[action], !frames.isEmpty else {
+            // A row with no frames must not kill the ambient chain.
+            armAmbientTimer()
+            return
+        }
         petState = action
         frameIndex = 0
         currentLoops = 0
@@ -1112,12 +1150,13 @@ final class TouchBarPetView: NSButton {
         armFrameTimer()
     }
 
-    private func setState(_ action: PetAction) {
-        petState = action
+    /// Static idle frame: no frame timer, so an idle pet costs nothing to draw.
+    private func showIdle() {
+        frameTimer?.invalidate()
+        petState = .idle
         frameIndex = 0
         currentLoops = 0
         showFrame()
-        armFrameTimer()
     }
 
     private func showFrame() {
@@ -1132,6 +1171,7 @@ final class TouchBarPetView: NSButton {
         // A fired timer's Task can run just after the view detached; without
         // this guard the chain would re-arm on a hidden view until dealloc.
         guard window != nil else { return }
+        guard petState != .idle else { return }
         guard let frames = images[petState], !frames.isEmpty else { return }
         frameIndex += 1
         if frameIndex >= frames.count {
@@ -1139,6 +1179,7 @@ final class TouchBarPetView: NSButton {
             currentLoops += 1
             if pendingReturnToIdle && currentLoops >= loopsRemaining {
                 finishAction()
+                return
             }
         }
         showFrame()
@@ -1147,7 +1188,7 @@ final class TouchBarPetView: NSButton {
 
     private func finishAction() {
         pendingReturnToIdle = false
-        setState(.idle)
+        showIdle()
         armAmbientTimer()
     }
 
@@ -1727,7 +1768,7 @@ struct SettingsView: View {
                     value: $store.petMinInterval,
                     range: 5...300,
                     step: 5,
-                    suffix: "s"
+                    suffix: "\(Int(store.petMinInterval)) s"
                 )
 
                 settingSlider(
@@ -1735,7 +1776,7 @@ struct SettingsView: View {
                     value: $store.petMaxInterval,
                     range: 5...300,
                     step: 5,
-                    suffix: "s"
+                    suffix: "\(Int(store.petMaxInterval)) s"
                 )
 
                 HStack {

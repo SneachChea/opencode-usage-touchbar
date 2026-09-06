@@ -44,9 +44,10 @@ OpenCode Usage TouchBar
   and observes which application is frontmost.
 - `CodexPetPackage` parses a local pet manifest (`pet.json`), decodes the
   spritesheet once, and crops the canonical animation rows.
-- `TouchBarPetView` plays the selected pet on the Touch Bar: ambient random
-  states, a tap-triggered wave, and an App Nap activity held only while the
-  pet is actually visible.
+- `TouchBarPetView` plays the selected pet on the Touch Bar: a static idle
+  frame between animations (no continuous per-frame redraws), random ambient
+  actions and a tap-triggered wave, with an App Nap activity held while the
+  pet is attached to a presented bar.
 - `TouchBarSystemModal` isolates the optional undocumented AppKit selectors and
   checks their availability before use.
 
