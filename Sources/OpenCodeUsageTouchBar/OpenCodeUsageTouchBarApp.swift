@@ -503,6 +503,11 @@ enum TouchBarMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class UsageStore: ObservableObject {
+    @Published var touchBarSource: TouchBarSource {
+        didSet {
+            UserDefaults.standard.set(touchBarSource.rawValue, forKey: "touchBarSource")
+        }
+    }
     @Published var snapshot: UsageSnapshot?
     @Published var errorMessage: String?
     @Published var isLoading = false
@@ -580,6 +585,7 @@ final class UsageStore: ObservableObject {
         // The bundle identifier changed at rename, so old preferences are
         // unreachable; default to the persistent mode the user sees.
         touchBarMode = defaults.string(forKey: "touchBarMode").flatMap(TouchBarMode.init(rawValue:)) ?? .always
+        touchBarSource = defaults.string(forKey: "touchBarSource").flatMap(TouchBarSource.init(rawValue:)) ?? .codex
         appLanguage = defaults.string(forKey: "appLanguage").flatMap(AppLanguage.init(rawValue:)) ?? .system
         petID = defaults.string(forKey: "petID")
         petsFolderOverride = defaults.string(forKey: "petFolder")
@@ -1022,6 +1028,8 @@ enum TouchBarSystemModal {
 }
 
 private extension NSTouchBarItem.Identifier {
+    static let usagePage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.usage-page")
+    static let codexLogo = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.codex-logo")
     static let fiveHourUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.five-hour")
     static let weeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.weekly")
     static let refreshUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.refresh")
@@ -1029,7 +1037,6 @@ private extension NSTouchBarItem.Identifier {
     static let goWeeklyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-weekly")
     static let goMonthlyUsage = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.go-monthly")
     static let openCodeLogo = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.opencode-logo")
-    static let noUsageSource = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.no-source")
     static let pet = NSTouchBarItem.Identifier("com.local.opencodeusagetouchbar.pet")
 }
 
@@ -1257,6 +1264,9 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
     let touchBar = NSTouchBar()
 
     private let store: UsageStore
+    private var codexPage: NSView?
+    private var goPage: NSView?
+    private var emptyPageLabel: NSTextField?
     private var fiveHourLabel: NSTextField?
     private var fiveHourProgress: TouchBarProgressView?
     private var weeklyLabel: NSTextField?
@@ -1279,12 +1289,10 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         super.init()
 
         touchBar.delegate = self
-        // Deliberately bumped when the default layout changes: macOS otherwise
-        // re-applies the persisted custom item order, which pins newly added
-        // items (the pet) to the right end of the bar. The previous identifier
-        // referenced items that no longer exist (reset times, hide button).
+        // New layout identity: the bar now has a single fixed-width usage area
+        // item instead of the old separate quota items.
         touchBar.customizationIdentifier = NSTouchBar.CustomizationIdentifier(
-            "com.local.opencodeusagetouchbar.usage.pet-v1"
+            "com.local.opencodeusagetouchbar.usage-page-v1"
         )
         updateDefaultItemIdentifiers()
 
@@ -1384,6 +1392,38 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         makeItemForIdentifier identifier: NSTouchBarItem.Identifier
     ) -> NSTouchBarItem? {
         switch identifier {
+        case .usagePage:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let container = NSView()
+            container.widthAnchor.constraint(equalToConstant: 414).isActive = true
+            container.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            func page(_ identifiers: [NSTouchBarItem.Identifier]) -> NSView {
+                let views = identifiers.compactMap {
+                    (self.touchBar(touchBar, makeItemForIdentifier: $0) as? NSCustomTouchBarItem)?.view
+                }
+                let stack = NSStackView(views: views)
+                stack.orientation = .horizontal
+                stack.alignment = .centerY
+                stack.spacing = 8
+                return stack
+            }
+            codexPage = page([.codexLogo, .fiveHourUsage, .weeklyUsage])
+            goPage = page([.openCodeLogo, .goRollingUsage, .goWeeklyUsage, .goMonthlyUsage])
+            emptyPageLabel = NSTextField(labelWithString: store.tr("no_usage_source"))
+            emptyPageLabel?.font = .systemFont(ofSize: 12)
+            emptyPageLabel?.textColor = .secondaryLabelColor
+            for view in [codexPage, goPage, emptyPageLabel].compactMap({ $0 }) {
+                container.addSubview(view)
+                view.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                    view.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+                ])
+            }
+            item.view = container
+            item.customizationLabel = "Codex / OpenCode Go"
+            updateItems()
+            return item
         case .fiveHourUsage:
             let result = makeUsageItem(identifier: identifier, title: store.tr("five_hour_short"))
             fiveHourLabel = result.label
@@ -1441,22 +1481,20 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
             }
             item.customizationLabel = store.tr("pet_customization")
             return item
-        case .noUsageSource:
+        case .codexLogo, .openCodeLogo:
             let item = NSCustomTouchBarItem(identifier: identifier)
-            let label = NSTextField(labelWithString: store.tr("no_usage_source"))
-            label.font = .systemFont(ofSize: 12, weight: .regular)
-            label.textColor = .secondaryLabelColor
-            item.view = label
-            item.customizationLabel = store.tr("no_usage_source")
-            return item
-        case .openCodeLogo:
-            let item = NSCustomTouchBarItem(identifier: identifier)
-            let view = NSImageView()
-            view.image = OpenCodeLogo.image
-            view.imageScaling = .scaleProportionallyUpOrDown
-            view.widthAnchor.constraint(equalToConstant: 30).isActive = true
-            item.view = view
-            item.customizationLabel = "OpenCode"
+            let button = NSButton()
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.image = identifier == .codexLogo ? CodexLogo.image : OpenCodeLogo.image
+            button.imageScaling = .scaleProportionallyUpOrDown
+            button.target = self
+            button.action = #selector(switchUsageSource)
+            button.setAccessibilityLabel(identifier == .codexLogo ? "Codex" : "OpenCode Go")
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 27).isActive = true
+            item.view = button
+            item.customizationLabel = identifier == .codexLogo ? "Codex" : "OpenCode"
             return item
         default:
             return nil
@@ -1491,6 +1529,11 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
 
     private func updateItems() {
         updateDefaultItemIdentifiers()
+        let source = store.touchBarSource.available(codex: store.codexConfigured, go: store.openCodeGoConfigured)
+        codexPage?.isHidden = source != .codex
+        goPage?.isHidden = source != .openCodeGo
+        emptyPageLabel?.isHidden = source != nil
+        emptyPageLabel?.stringValue = store.tr("no_usage_source")
 
         updateUsage(
             window: store.snapshot?.primary,
@@ -1550,36 +1593,18 @@ final class UsageTouchBarController: NSObject, NSTouchBarDelegate {
         let petIdentifiers: [NSTouchBarItem.Identifier] = petPackage != nil
             ? [.pet, .fixedSpaceSmall]
             : []
-        let goIdentifiers: [NSTouchBarItem.Identifier] = store.openCodeGoConfigured
-            ? [
-                .openCodeLogo,
-                .fixedSpaceSmall,
-                .goRollingUsage,
-                .fixedSpaceSmall,
-                .goWeeklyUsage,
-                .fixedSpaceSmall,
-                .goMonthlyUsage
-            ]
-            : []
-        let codexIdentifiers: [NSTouchBarItem.Identifier] = store.codexConfigured
-            ? [
-                .fiveHourUsage,
-                .fixedSpaceSmall,
-                .weeklyUsage
-            ]
-            : []
-        // Pet sits after the usage groups, right of the monthly bar.
-        var identifiers = codexIdentifiers + goIdentifiers + petIdentifiers
-        if identifiers.isEmpty {
-            identifiers = [
-                .openCodeLogo,
-                .fixedSpaceSmall,
-                .noUsageSource
-            ]
-        }
-        identifiers += [.flexibleSpace, .refreshUsage]
+        // Only the page's visibility changes on toggle: the pet stays attached,
+        // at the same position, with its animation and ambient timer untouched.
+        let identifiers: [NSTouchBarItem.Identifier] = [.usagePage, .fixedSpaceSmall]
+            + petIdentifiers + [.flexibleSpace, .refreshUsage]
         guard touchBar.defaultItemIdentifiers != identifiers else { return }
         touchBar.defaultItemIdentifiers = identifiers
+    }
+
+    @objc private func switchUsageSource() {
+        guard store.codexConfigured, store.openCodeGoConfigured else { return }
+        store.touchBarSource = store.touchBarSource == .codex ? .openCodeGo : .codex
+        updateItems()
     }
 
     private func updateUsage(
@@ -2100,17 +2125,15 @@ struct OpenCodeUsageTouchBarApp: App {
 }
 
 enum OpenCodeLogo {
-    /// OpenCode mark with transparent background (source: seeklogo.com, 66/665474).
-    /// Rendered as a template image so AppKit tints the glyph for the dark
-    /// Touch Bar context without shipping a colour variant.
+    /// OpenCode dark logo supplied as an SVG, embedded so the app has no
+    /// runtime dependency on an external resource file.
     static var image: NSImage? {
-        guard let data = Data(base64Encoded: pngBase64), let image = NSImage(data: data) else {
+        guard let data = Data(base64Encoded: svgBase64), let image = NSImage(data: data) else {
             return nil
         }
-        image.isTemplate = true
         image.size = NSSize(width: 22, height: 27)
         return image
     }
 
-    private static let pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAALAAAADYCAYAAABLEGlpAAAC3ElEQVR42u3SwQmCcBjGYScJWkLoIEU3qTkawtrCkzZJ2gzaDtaxGarjX28pgdDzwu8b4OOJTllWhC0Xi5c014ZeI4AFsASwNALw8XPCPElzbugVYAEsASwBLIA9SQBLAEsAC2AJYAlgAQywAJYAlgAWwAALYAlgCWABLAEsASwBLIAlgCWABTDAAlgCWAJYAAMsgCWAJYAFsATwL9puNs+wXZo+NL7hPwEGGGCAAQYYYAE8v9qm2YdFNmm3tt2HAQwwwAADDDDABjDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAAAwwwwAADDDDABjDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAGMMAAAwwwwAADDDDAAAMMMMAAAwwwwAYwwAADDDDAAAMMMMAGMMAAAwwwwAADDDDABjDAAAMMMMD/B7i6XPKwe9cdNL66qvIwgAEGGGCAAQZYAM+vsih6XetaEzqXZS+AAQYYYIABBlgAAwwwwAADDDDAAAMsgAEGGGCAAQYYYIABBhhggAEGGGCAARbAAAMMMMAAAwwwwAALYIABBhhggAEGGGCABTDAAAMMMMAAAwwwwAADDDDAAAMMMMACGGCAAQYYYIABBhhgAQwwwAADDDDAAAMMsAAGGGCAAQYYYAgBBhhggAEGGGCAAQZYAAMMMMAAAwwwwAADLIABBhhggAEGGGCAARbAAAMMMMAAAyyAAQYYYIABBhhggAEWwAADDDDAAAMMMMAAC2CAAQYYYIABBhhggAUwwAADDDDAAAtggAEGGGCAAQYYYIAFMMAAAwwwwAADDDDAAhhggAEGGGCAAQYYYAEMMMAAf9Mqjnutk0QTGv4TYIABBhhggAEWwBLAEsASwAJYAlgCWAADLIAlgCWABTDAAlgCWAJYAEsASwBLAAtgCWAJYAEMsACWAJYAFsCeJIAlgCWABbAEsASwAAZYAEsASwALYIAFsASw9CXgN3zVXSulPvT5AAAAAElFTkSuQmCC"
+    private static let svgBase64 = "PHN2ZyB3aWR0aD0nMjQwJyBoZWlnaHQ9JzMwMCcgdmlld0JveD0nMCAwIDI0MCAzMDAnIGZpbGw9J25vbmUnIHhtbG5zPSdodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2Zyc+PGcgY2xpcC1wYXRoPSd1cmwoI2NsaXAwXzE0MDFfODYyODMpJz48bWFzayBpZD0nbWFzazBfMTQwMV84NjI4Mycgc3R5bGU9J21hc2stdHlwZTpsdW1pbmFuY2UnIG1hc2tVbml0cz0ndXNlclNwYWNlT25Vc2UnIHg9JzAnIHk9JzAnIHdpZHRoPScyNDAnIGhlaWdodD0nMzAwJz48cGF0aCBkPSdNMjQwIDBIMFYzMDBIMjQwVjBaJyBmaWxsPSd3aGl0ZScvPjwvbWFzaz48ZyBtYXNrPSd1cmwoI21hc2swXzE0MDFfODYyODMpJz48cGF0aCBkPSdNMTgwIDI0MEg2MFYxMjBIMTgwVjI0MFonIGZpbGw9JyM0QjQ2NDYnLz48cGF0aCBkPSdNMTgwIDYwSDYwVjI0MEgxODBWNjBaTTI0MCAzMDBIMFYwSDI0MFYzMDBaJyBmaWxsPScjRjFFQ0VDJy8+PC9nPjwvZz48ZGVmcz48Y2xpcFBhdGggaWQ9J2NsaXB0XzE0MDFfODYyODMnPjxyZWN0IHdpZHRoPScyNDAnIGhlaWdodD0nMzAwJyBmaWxsPSd3aGl0ZScvPjwvY2xpcFBhdGg+PC9kZWZzPjwvc3ZnPg=="
 }

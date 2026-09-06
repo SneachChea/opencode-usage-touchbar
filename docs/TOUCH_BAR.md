@@ -4,9 +4,16 @@
 
 The application creates an `NSTouchBar` containing:
 
-- five-hour usage and progress;
-- weekly usage and progress;
-- OpenCode Go rolling, weekly, and monthly usage and progress;
+- one usage page at a time: Codex (color logo, five-hour and weekly quotas)
+  or OpenCode Go (OpenCode logo, rolling, weekly and monthly quotas);
+- tapping the logo switches between configured sources (Codex ↔ OpenCode
+  Go). Codex is the initial selection; if only one source is configured, it
+  is shown automatically and tapping does nothing;
+- the usage area keeps a fixed width. Switching only hides/shows its page
+  views, without rebuilding the Touch Bar or detaching the selected pet.
+  The pet stays to the right, in the same position, and keeps animating.
+  Touches on the pet or refresh button never switch sources; tapping the pet
+  still makes it wave;
 - a manual refresh button (refreshes both Codex and OpenCode Go), rendered as
   a compact borderless icon. There is no in-bar hide button: the native
   close/Control Strip affordance already provides one, so the app relies on
@@ -47,10 +54,17 @@ DFRSystemModalShowsCloseBoxWhenFrontMost()   (DFRFoundation private framework)
 
 Details:
 
-- Sections are conditional: the Codex group is only on the bar when a local
-  Codex executable is found; the OpenCode group (introduced by the OpenCode
-  logo) is only there when an API key is configured. An empty bar just shows
-  the refresh button.
+- Sources are conditional: Codex requires a local executable; OpenCode Go
+  requires a configured API key. With neither available, the usage area shows
+  the localized no-source message. The enabled pet and refresh remain visible.
+- Source switching is a plain borderless `NSButton` behind each logo (target
+  `switchUsageSource`) — the same reliable control path as the pet and refresh
+  buttons. The button belongs only to the usage area.
+- The selected source is persisted in `UserDefaults` (`touchBarSource`) and
+  restored at launch; `TouchBarSource.available` corrects it if the chosen
+  source is no longer configured.
+- Both logos are created once when the usage area item is built; switching
+  only toggles page visibility, so the tapped button survives the change.
 
 - Presentation uses `placement 0` with a `nil` system-tray identifier, which
   shares the Touch Bar with the Apple Control Strip. The Control Strip stays
@@ -99,6 +113,21 @@ Dismissing is synchronous; no relaunch of the frontmost app is required.
 A crash or `kill -9` runs none of this, so the modal bar can stay claimed with a
 frozen usage display until macOS or another presenter takes the bar back. Only
 a normal quit (`applicationWillTerminate`) restores the native bar reliably.
+
+## Verification
+
+Run the source-selection check without credentials or Touch Bar hardware:
+
+```sh
+swiftc Sources/OpenCodeUsageTouchBar/TouchBarSource.swift scripts/verify-touchbar-source.swift -o .build/verify-touchbar-source
+.build/verify-touchbar-source
+```
+
+On hardware, configure both sources and enable a pet. Tap the logo: the usage
+page should switch between Codex and OpenCode Go; the pet should neither move
+nor restart its animation. With only one source configured, tapping must do
+nothing. Verify that tapping the pet and refresh button still works, and that
+the Control Strip is usable.
 
 ## Compatibility and review
 

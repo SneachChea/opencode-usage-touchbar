@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Codex color logo beside its Touch Bar usage bars. Tapping the logo switches
+  between Codex and OpenCode Go; only one source is displayed at a time and
+  the enabled pet stays fixed. The selected source is remembered across
+  launches.
+
 - Animated Codex pet on the Touch Bar: pick any pet installed under
   `~/.codex/pets/` (or a custom folder) in Settings → Pet. The pet idles,
   changes state randomly (interval configurable in Settings, 5–300 s), and
@@ -13,6 +18,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The Touch Bar OpenCode logo now uses the supplied dark SVG artwork, embedded
+  directly in the app instead of the previous PNG mark.
 - App Nap suppression is now scoped to the animated Touch Bar pet while it is
   visible; the permanent app-wide anti-App-Nap activity was removed.
 - The Touch Bar pet now rests on a static idle frame between animations, so a
